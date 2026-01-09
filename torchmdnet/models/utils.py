@@ -567,6 +567,7 @@ class MLP(nn.Module):
         hidden_channels,
         activation,
         num_hidden_layers=0,
+        bias_on_last_layer=True,
         dtype=torch.float32,
     ):
         super(MLP, self).__init__()
@@ -578,13 +579,14 @@ class MLP(nn.Module):
         for _ in range(num_hidden_layers):
             self.layers.append(nn.Linear(hidden_channels, hidden_channels, dtype=dtype))
             self.layers.append(self.act)
-        self.layers.append(nn.Linear(hidden_channels, out_channels, dtype=dtype))
+        self.layers.append(nn.Linear(hidden_channels, out_channels, dtype=dtype, bias=bias_on_last_layer))
 
     def reset_parameters(self):
         for layer in self.layers:
             if isinstance(layer, nn.Linear):
                 nn.init.xavier_uniform_(layer.weight)
-                layer.bias.data.fill_(0)
+                if layer.bias is not None:
+                    layer.bias.data.fill_(0)
 
     def forward(self, x):
         x = self.layers(x)

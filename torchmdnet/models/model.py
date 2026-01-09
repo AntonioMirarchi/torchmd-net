@@ -142,6 +142,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
         dtype=dtype,
         static_shapes=args.get("static_shapes", False),
         num_hidden_layers=args.get("output_mlp_num_layers", 0),
+        bias_on_last_layer=args.get("output_mlp_bias_on_last_layer", True),
         num_layers=args["num_layers"] if args["output_model"] == "ScalarPlusWeightedCoulomb" else 0, # https://github.com/torchmd/torchmd-net/issues/343
         q_dim=args.get("q_dim",0),
         q_weights=args.get("q_weights", [])
