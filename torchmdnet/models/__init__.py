@@ -7,4 +7,5 @@ __all_models__ = [
     "transformer",
     "equivariant-transformer",
     "tensornet",
+    "tensornet2",
 ]
