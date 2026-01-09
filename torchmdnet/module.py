@@ -5,7 +5,7 @@
 from collections import defaultdict
 import torch
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim import lr_scheduler as torch_lr_scheduler
 from torch.nn.functional import local_response_norm
 from torch import Tensor
 from typing import Optional, Dict, Tuple
@@ -14,7 +14,7 @@ from torchmdnet.models.model import create_model, load_model
 from torchmdnet.models.utils import dtype_mapping
 from torchmdnet.loss import l1_loss, loss_class_mapping
 import torch_geometric.transforms as T
-
+import inspect
 
 class FloatCastDatasetWrapper(T.BaseTransform):
     """A transform that casts all floating point tensors to a given dtype.
@@ -123,13 +123,32 @@ class LNNP(LightningModule):
             lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay,
         )
-        scheduler = ReduceLROnPlateau(
-            optimizer,
-            "min",
-            factor=self.hparams.lr_factor,
-            patience=self.hparams.lr_patience,
-            min_lr=self.hparams.lr_min,
-        )
+        
+        # Get the scheduler class. The choices are restricted by parser arguments.
+        scheduler_cls = getattr(torch_lr_scheduler, self.hparams.lr_scheduler)
+        # NOTE: This looks ugly, it would be better to add an argument to parser named 'lr_scheduler_args'
+        # that is a dict of arguments to pass to the scheduler. However this would cause backwards compatibility issues due to 
+        # ReduceLROnPlateau args. So for now we keep this way of passing arguments. 
+        
+        # Build dict of all possible scheduler parameters from hparams
+        all_lr_kwargs = {
+            "mode": self.hparams.lr_mode,
+            "factor": self.hparams.lr_factor,
+            "patience": self.hparams.lr_patience,
+            "min_lr": self.hparams.lr_min,
+            "T_max": self.hparams.lr_T_max,
+            "eta_min": self.hparams.lr_eta_min,
+            "T_0": self.hparams.lr_T_0,
+            "T_mult": self.hparams.lr_T_mult,
+        }
+
+        # Get parameters that the scheduler accepts
+        sig = inspect.signature(scheduler_cls)
+        valid_params = set(sig.parameters.keys())
+        
+        lr_kwargs = {k: v for k, v in all_lr_kwargs.items() if k in valid_params}
+        scheduler = scheduler_cls(optimizer, **lr_kwargs)
+
         lr_metric = getattr(self.hparams, "lr_metric", "val")
         monitor = f"{lr_metric}_total_{self.hparams.train_loss}"
         lr_scheduler = {

@@ -39,12 +39,6 @@ def get_argparse():
     parser.add_argument('--num-epochs', default=300, type=int, help='number of epochs')
     parser.add_argument('--batch-size', default=32, type=int, help='batch size')
     parser.add_argument('--inference-batch-size', default=None, type=int, help='Batchsize for validation and tests.')
-    parser.add_argument('--lr', default=1e-4, type=float, help='learning rate')
-    parser.add_argument('--lr-patience', type=int, default=10, help='Patience for lr-schedule. Patience per eval-interval of validation')
-    parser.add_argument('--lr-metric', type=str, default='val', choices=['train', 'val'], help='Metric to monitor when deciding whether to reduce learning rate')
-    parser.add_argument('--lr-min', type=float, default=1e-6, help='Minimum learning rate before early stop')
-    parser.add_argument('--lr-factor', type=float, default=0.8, help='Factor by which to multiply the learning rate when the metric stops improving')
-    parser.add_argument('--lr-warmup-steps', type=int, default=0, help='How many steps to warm-up over. Defaults to 0 for no warm-up')
     parser.add_argument('--early-stopping-patience', type=int, default=30, help='Stop training after this many epochs without improvement')
     parser.add_argument('--early-stopping-monitor', type=str, default='val_total_mse_loss', choices=['train_total_mse_loss', 'val_total_mse_loss'], help='Metric to monitor for early stopping')
     parser.add_argument('--reset-trainer', type=bool, default=False, help='Reset training metrics (e.g. early stopping, lr) when loading a model checkpoint')
@@ -68,6 +62,24 @@ def get_argparse():
     parser.add_argument('--remove-ref-energy', action='store_true', help='If true, remove the reference energy from the dataset for delta-learning. Total energy can still be predicted by the model during inference by turning this flag off when loading.  The dataset must be compatible with Atomref for this to be used.')
     parser.add_argument('--checkpoint-monitor', type=str, default='val_total_mse_loss', choices=['train_total_mse_loss', 'val_total_mse_loss'], help='Metric to monitor for writing out best models')
     parser.add_argument('--load-weights', default=None, type=str, help='Load the weights of an existing model')
+    
+    # lr scheduler
+    parser.add_argument('--lr-scheduler', type=str, default='ReduceLROnPlateau', choices=["ReduceLROnPlateau", "CosineAnnealingLR", "CosineAnnealingWarmRestarts"], help='Type of learning rate scheduler to use')
+    parser.add_argument('--lr', default=1e-4, type=float, help='Initial learning rate')
+    parser.add_argument('--lr-warmup-steps', type=int, default=0, help='Number of steps for learning rate warm-up. Defaults to 0 for no warm-up')
+    # ReduceLROnPlateau specific
+    parser.add_argument('--lr-mode', type=str, default='min', help='[ReduceLROnPlateau] Mode for monitoring metric: min or max')
+    parser.add_argument('--lr-factor', type=float, default=0.8, help='[ReduceLROnPlateau] Factor by which to multiply the learning rate when the metric stops improving')
+    parser.add_argument('--lr-patience', type=int, default=10, help='[ReduceLROnPlateau] Patience for lr-schedule. Patience per eval-interval of validation')
+    parser.add_argument('--lr-min', type=float, default=1e-6, help='[ReduceLROnPlateau] Minimum learning rate threshold')
+    parser.add_argument('--lr-metric', type=str, default='val', choices=['train', 'val'], help='[ReduceLROnPlateau] Metric to monitor when deciding whether to reduce learning rate')
+    # CosineAnnealingLR specific
+    parser.add_argument('--lr-T-max', type=int, default=50, help='[CosineAnnealingLR] Maximum number of iterations/epochs')
+    parser.add_argument('--lr-eta-min', type=float, default=1e-7, help='[CosineAnnealingLR, CosineAnnealingWarmRestarts] Minimum learning rate')
+    # CosineAnnealingWarmRestarts specific
+    parser.add_argument('--lr-T-0', type=int, default=10, help='[CosineAnnealingWarmRestarts] Number of iterations for the first restart')
+    parser.add_argument('--lr-T-mult', type=int, default=2, help='[CosineAnnealingWarmRestarts] Factor to increase T_i after a restart')
+
     # dataset specific
     parser.add_argument('--dataset', default=None, type=str, choices=datasets.__all__, help='Name of the torch_geometric dataset')
     parser.add_argument('--dataset-root', default='~/data', type=str, help='Data storage directory (not used if dataset is "CG")')
