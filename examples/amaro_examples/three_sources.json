@@ -6,18 +6,18 @@
       "force_scale": 1.0
     }
   ],
-  "protein-ligand": [
+  "mdcath320": [
     {
-      "path": "../../../../hf/data/protein-ligand/all-atom/protein-ligand_310K_00006.parquet",
+      "path": "../../../../hf/data/mdCATH320K/all-atom/mdcath_320K_00122_2kmuA00_2krtA01.parquet",
       "stride": 10000,
       "force_scale": 1.0
     }
   ],
-  "small-mol": [
+  "mdcath348": [
     {
-      "path": "../../../../hf/data/small-mol/sm-1.2/all-atom/sm-1.2.parquet",
-      "stride": 50000,
-      "force_scale": 23.060548867
+      "path": "../../../../hf/data/mdCATH348K/all-atom/mdcath_348K_00122_2kmuA00_2krtA01.parquet",
+      "stride": 20000,
+      "force_scale": 1.0
     }
   ]
 }

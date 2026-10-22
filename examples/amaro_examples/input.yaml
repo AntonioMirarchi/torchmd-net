@@ -1,5 +1,6 @@
 # Run from the repository root:
 # python -m torchmdnet.scripts.train --conf examples/amaro_examples/input.yaml
+# The JSON selects one mdCATH Parquet file at each of 300 K, 320 K and 348 K.
 dataset: HFDataset
 dataset_root: .cache/amaro-hf-smoke
 dataset_arg:

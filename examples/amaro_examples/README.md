@@ -1,4 +1,4 @@
-# Three-source TensorNet smoke test
+# TensorNet smoke test with three mdCATH temperatures
 
 Run from the repository root in an environment with TorchMD-Net and its `hf`
 extra installed:
@@ -9,9 +9,9 @@ python -m torchmdnet.scripts.train --conf examples/amaro_examples/input.yaml
 
 This trains a one-layer TensorNet with 32 embedding channels and 8 radial basis
 functions for one epoch, then evaluates its best checkpoint. It uses force labels
-only, removes hydrogen atoms, and reads one real Parquet file from each collection
-under `/workspace2/noh-ForceField/hf/data`. It does not use charges or periodic
-boxes. The split is random over conformations, as in the rest of the repository.
+only, removes hydrogen atoms, and reads one mdCATH Parquet file at each of
+300 K, 320 K and 348 K. It does not use charges or periodic boxes. The split is
+random over conformations, as in the rest of the repository.
 This is a training smoke test, not a benchmark split.
 
 With this configuration, dataset preparation and setup run inside Lightning's
@@ -21,21 +21,21 @@ DataLoaders. All ranks must see the same cache and source paths. Configurations
 using standardization or priors retain eager setup before model construction;
 this example uses neither.
 
-`three_sources.json` uses paths relative to that JSON file. The YAML's paths are
-relative to the working directory. Caches go to `.cache/amaro-hf-smoke` and logs
-and checkpoints to `logs/amaro-hf-smoke`.
+`three_sources.json` uses paths relative to that JSON file, pointing to the local
+`hf/data/mdCATH*` directories. Adjust these paths for your data location. The
+YAML's paths are relative to the working directory. Caches go to
+`.cache/amaro-hf-smoke` and logs and checkpoints to `logs/amaro-hf-smoke`.
 
 | Collection | Stride | Force multiplier |
 | --- | ---: | ---: |
 | mdCATH300K | 5000 | 1 |
-| Protein–ligand | 10000 | 1 |
-| Small-mol v1.2 | 50000 | 23.060548867 |
+| mdCATH320K | 10000 | 1 |
+| mdCATH348K | 20000 | 1 |
 
 Strides count rows independently in each source file, starting at row zero.
-Atom-count and force filters can discard additional rows. The small-molecule
-multiplier converts eV/angstrom to kcal/mol/angstrom, matching mdCATH metadata
-and the confirmed protein–ligand units. `max_gradient` is applied after this
-conversion. Positions are already in angstroms in these inputs.
+Atom-count and force filters can discard additional rows. These mdCATH inputs
+use angstroms for positions and kcal/mol/angstrom for forces, so all force
+multipliers are 1. `max_gradient` uses the same force units.
 
 With `properties: []` and `use_box: false`, the Parquet reader loads only
 `atomic_numbers`, `positions`, and `forces`. PDB/PSF blobs, identifiers, energies,
@@ -63,8 +63,7 @@ Dataset processing resolves in two stages:
    a global stride supplied through the CLI. Fields absent from the JSON use
    `dataset_arg`, then the `HFDataset` constructor defaults.
 
-For example, this changes the atom-count limit while keeping the JSON's strides
-and unit conversions:
+For example, this changes the atom-count limit while keeping the JSON's strides:
 
 ```bash
 torchmd-train --conf examples/amaro_examples/input.yaml \

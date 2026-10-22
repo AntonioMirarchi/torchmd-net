@@ -216,9 +216,9 @@ def test_hf_missing_columns(tmp_path, parquet_file):
 
 def test_hf_column_projection_and_mixed_schemas(tmp_path, parquet_file, monkeypatch):
     """Force-only loading projects required columns despite differing source metadata."""
-    first = parquet_file("md.parquet", charges=False, pdb=[b"unused"] * 8)
+    first = parquet_file("first.parquet", charges=False, pdb=[b"unused"] * 8)
     second = parquet_file(
-        "sm.parquet", partial_charges=[[0.1, 0.2, 0.3]] * 8, smiles=["CO"] * 8
+        "second.parquet", partial_charges=[[0.1, 0.2, 0.3]] * 8, smiles=["CO"] * 8
     )
     original_load = hf.load_dataset
     projected = []
