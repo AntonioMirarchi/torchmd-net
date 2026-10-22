@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 from lightning import LightningDataModule
-from lightning_utilities.core.rank_zero import rank_zero_warn
+from lightning_utilities.core.rank_zero import rank_zero_warn, rank_zero_only
 from torchmdnet import datasets
 from torchmdnet.utils import make_splits, MissingEnergyException
 from torchmdnet.models.utils import scatter
@@ -32,6 +32,22 @@ class DataModule(LightningDataModule):
         self._mean, self._std = None, None
         self._saved_dataloaders = dict()
         self.dataset = dataset
+        if self.hparams.get("dataset") == "HFDataset":
+            # One global writer; every node must see the same source and cache paths.
+            self.prepare_data_per_node = False
+
+    @rank_zero_only
+    def prepare_data(self):
+        """Build shared HF caches on global rank zero without retaining dataset state.
+
+        Lightning waits for preparation before calling setup on each rank. The
+        decorator selects a rank; it does not synchronize manual calls itself.
+        """
+        if self.dataset is None and self.hparams["dataset"] == "HFDataset":
+            # setup() creates the dataset instance separately in each process.
+            datasets.HFDataset(
+                self.hparams["dataset_root"], **(self.hparams["dataset_arg"] or {})
+            )
 
     def setup(self, stage):
         if self.dataset is None:
@@ -54,6 +70,14 @@ class DataModule(LightningDataModule):
                 self.dataset = getattr(datasets, self.hparams["dataset"])(
                     self.hparams["dataset_root"], **dataset_arg
                 )
+
+        # Check selected cache outputs, since source charges may have been excluded.
+        if (
+            isinstance(self.dataset, datasets.HFDataset)
+            and self.hparams.get("charge", False)
+            and not self.dataset.has_q
+        ):
+            raise ValueError("charge=True requires a 'q' or 'pq' column in HFDataset.")
 
         self.idx_train, self.idx_val, self.idx_test = make_splits(
             len(self.dataset),

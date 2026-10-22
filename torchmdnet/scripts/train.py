@@ -6,6 +6,7 @@ import sys
 import os
 import yaml
 import argparse
+import json
 import logging
 import torch
 import lightning.pytorch as pl
@@ -71,7 +72,7 @@ def get_argparse():
     # dataset specific
     parser.add_argument('--dataset', default=None, type=str, choices=datasets.__all__, help='Name of the torch_geometric dataset')
     parser.add_argument('--dataset-root', default='~/data', type=str, help='Data storage directory (not used if dataset is "CG")')
-    parser.add_argument('--dataset-arg', default=None, help='Additional dataset arguments. Needs to be a dictionary.')
+    parser.add_argument('--dataset-arg', default=None, type=json.loads, help='Additional dataset arguments as a JSON dictionary. Replaces the entire dataset_arg from --conf when specified after it.')
     parser.add_argument('--coord-files', default=None, type=str, help='Custom coordinate files glob')
     parser.add_argument('--embed-files', default=None, type=str, help='Custom embedding files glob')
     parser.add_argument('--energy-files', default=None, type=str, help='Custom energy files glob')
@@ -179,6 +180,22 @@ def fix_state_dict(ckpt):
     return state_dict
 
 
+def _requires_pre_fit_setup(args):
+    """Return whether parsed training arguments require data before model creation.
+
+    HF training normally defers preparation and setup to Lightning's synchronized
+    lifecycle. Standardization needs mean/std and priors may need dataset metadata
+    before model creation; reference-energy removal adds an Atomref prior. Other
+    dataset types retain their existing eager setup behavior.
+    """
+    return (
+        args.dataset != "HFDataset"
+        or args.standardize
+        or args.remove_ref_energy
+        or bool(args.prior_model)
+    )
+
+
 def main():
     args = get_args()
     if args.remove_ref_energy:
@@ -192,9 +209,13 @@ def main():
 
     # initialize data module
     data = DataModule(args)
-    data.prepare_data()
-    data.setup("fit")
+    if _requires_pre_fit_setup(args):
+        data.prepare_data()
+        data.setup("fit")
+    # Otherwise Lightning prepares the shared cache on rank zero and waits
+    # before calling setup on every rank inside Trainer.fit.
 
+    # In the deferred path there are no priors, so data.dataset can still be None.
     prior_models = create_prior_models(vars(args), data.dataset)
     args.prior_args = [p.get_init_args() for p in prior_models]
     # initialize lightning module
@@ -206,7 +227,8 @@ def main():
 
     mon = args.checkpoint_monitor
     chkpoint_name = f"epoch={{epoch}}-{mon.split('_')[0]}_loss={{{mon}:.4f}}"
-    if len(data.idx_test):
+    # Deferred setup has not created split indices when naming checkpoints.
+    if hasattr(data, "idx_test") and len(data.idx_test):
         chkpoint_name += "-test_loss={test_total_l1_loss:.4f}"
 
     callbacks = []

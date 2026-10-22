@@ -18,6 +18,7 @@ from .mdcath import MDCATH
 from .custom import Custom
 from .water import WaterBox
 from .hdf import HDF5
+from .huggingface import HFDataset
 from .md17 import MD17
 from .md22 import MD22
 from .qm9 import QM9
@@ -42,6 +43,7 @@ __all__ = [
     "GDB10to13",
     "GenentechTorsions",
     "HDF5",
+    "HFDataset",
     "MDCATH",
     "MD17",
     "MD22",
