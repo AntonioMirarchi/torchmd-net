@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import torch as pt
 from .models.model import TorchMD_Net
 from .models.torchmd_gn import TorchMD_GN
+from .models.utils import CosineCutoff
 
 
 class TorchMD_GN_optimized(pt.nn.Module):
@@ -14,6 +15,14 @@ class TorchMD_GN_optimized(pt.nn.Module):
     """
 
     def __init__(self, model):
+        # NNPOps replaces the whole convolution, including its cosine envelope.
+        if any(
+            not isinstance(inter.conv.cutoff, CosineCutoff)
+            for inter in model.interactions
+        ):
+            raise ValueError(
+                'NNPOps optimization only supports cutoff_fn_type="cosine"'
+            )
         from NNPOps.CFConv import CFConv
         from NNPOps.CFConvNeighbors import CFConvNeighbors
 

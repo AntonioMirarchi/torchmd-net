@@ -67,3 +67,13 @@ def test_gn(device, num_atoms):
 
     pt.testing.assert_close(ref_energy, energy, rtol=1e-5, atol=1e-5)
     pt.testing.assert_close(ref_gradient, gradient, rtol=1e-4, atol=1e-5)
+
+
+def test_polynomial_cutoff_rejected():
+    """Reject unsupported envelopes before NNPOps can replace the convolution."""
+    from torchmdnet.models.torchmd_gn import TorchMD_GN
+    from torchmdnet.optimize import TorchMD_GN_optimized
+
+    model = TorchMD_GN(cutoff_fn_type="polynomial", num_layers=1)
+    with pytest.raises(ValueError, match='only supports cutoff_fn_type="cosine"'):
+        TorchMD_GN_optimized(model)

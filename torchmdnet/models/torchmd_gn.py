@@ -7,7 +7,7 @@ import torch
 from torch import Tensor, nn
 from torchmdnet.models.utils import (
     NeighborEmbedding,
-    CosineCutoff,
+    cutoff_class_mapping,
     OptimizedDistance,
     rbf_class_mapping,
     act_class_mapping,
@@ -63,6 +63,8 @@ class TorchMD_GN(nn.Module):
             (default: :obj:`"silu"`)
         neighbor_embedding (bool, optional): Whether to perform an initial neighbor
             embedding step. (default: :obj:`True`)
+        cutoff_fn_type (str, optional): Cutoff envelope, "cosine" or "polynomial".
+            Applied to radial basis envelopes and message passing. (default: "cosine")
         cutoff_lower (float, optional): Lower cutoff distance for interatomic interactions.
             (default: :obj:`0.0`)
         cutoff_upper (float, optional): Upper cutoff distance for interatomic interactions.
@@ -104,6 +106,7 @@ class TorchMD_GN(nn.Module):
         aggr="add",
         dtype=torch.float32,
         box_vecs=None,
+        cutoff_fn_type="cosine",
     ):
         super(TorchMD_GN, self).__init__()
 
@@ -147,7 +150,12 @@ class TorchMD_GN(nn.Module):
         )
 
         self.distance_expansion = rbf_class_mapping[rbf_type](
-            cutoff_lower, cutoff_upper, num_rbf, trainable_rbf, dtype=dtype
+            cutoff_lower,
+            cutoff_upper,
+            num_rbf,
+            trainable_rbf,
+            dtype=dtype,
+            cutoff_fn_type=cutoff_fn_type,
         )
         self.neighbor_embedding = (
             NeighborEmbedding(
@@ -157,6 +165,7 @@ class TorchMD_GN(nn.Module):
                 cutoff_upper,
                 self.max_z,
                 dtype=dtype,
+                cutoff_fn_type=cutoff_fn_type,
             )
             if neighbor_embedding
             else None
@@ -173,6 +182,7 @@ class TorchMD_GN(nn.Module):
                 cutoff_upper,
                 aggr=self.aggr,
                 dtype=dtype,
+                cutoff_fn_type=cutoff_fn_type,
             )
             self.interactions.append(block)
 
@@ -243,6 +253,7 @@ class InteractionBlock(nn.Module):
         cutoff_upper,
         aggr="add",
         dtype=torch.float32,
+        cutoff_fn_type="cosine",
     ):
         super(InteractionBlock, self).__init__()
         self.mlp = nn.Sequential(
@@ -259,6 +270,7 @@ class InteractionBlock(nn.Module):
             cutoff_upper,
             aggr=aggr,
             dtype=dtype,
+            cutoff_fn_type=cutoff_fn_type,
         )
         self.act = activation()
         self.lin = nn.Linear(hidden_channels, hidden_channels, dtype=dtype)
@@ -304,12 +316,13 @@ class CFConv(nn.Module):
         cutoff_upper,
         aggr="add",
         dtype=torch.float32,
+        cutoff_fn_type="cosine",
     ):
         super(CFConv, self).__init__()
         self.lin1 = nn.Linear(in_channels, num_filters, bias=False, dtype=dtype)
         self.lin2 = nn.Linear(num_filters, out_channels, bias=True, dtype=dtype)
         self.net = net
-        self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
+        self.cutoff = cutoff_class_mapping[cutoff_fn_type](cutoff_lower, cutoff_upper)
         self.aggr = aggr
         self.reset_parameters()
 

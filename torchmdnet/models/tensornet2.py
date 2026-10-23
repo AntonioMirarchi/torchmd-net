@@ -2,7 +2,7 @@ import torch
 from typing import Optional, Tuple
 from torch import Tensor, nn
 from torchmdnet.models.utils import (
-    CosineCutoff,
+    cutoff_class_mapping,
     OptimizedDistance,
     rbf_class_mapping,
     act_class_mapping,
@@ -196,6 +196,8 @@ class TensorNet2(nn.Module):
             backpropagation. (default: :obj:`False`)
         activation (string, optional): The type of activation function to use.
             (default: :obj:`"silu"`)
+        cutoff_fn_type (str, optional): Cutoff envelope, "cosine" or "polynomial".
+            Applied to radial basis envelopes and message passing. (default: "cosine")
         cutoff_lower (float, optional): Lower cutoff distance for interatomic interactions.
             (default: :obj:`0.0`)
         cutoff_upper (float, optional): Upper cutoff distance for interatomic interactions.
@@ -245,6 +247,7 @@ class TensorNet2(nn.Module):
         box_vecs=None,
         output_charges=False,
         repulsion=False,
+        cutoff_fn_type="cosine",
     ):
         super(TensorNet2, self).__init__()
 
@@ -285,7 +288,11 @@ class TensorNet2(nn.Module):
         self.cutoff_upper = cutoff_upper
         act_class = act_class_mapping[activation]
         self.distance_expansion = rbf_class_mapping[rbf_type](
-            cutoff_lower, cutoff_upper, num_rbf, trainable_rbf
+            cutoff_lower,
+            cutoff_upper,
+            num_rbf,
+            trainable_rbf,
+            cutoff_fn_type=cutoff_fn_type,
         )
         self.tensor_embedding = TensorEmbedding(
             hidden_channels,
@@ -296,6 +303,7 @@ class TensorNet2(nn.Module):
             trainable_rbf,
             max_z,
             dtype,
+            cutoff_fn_type=cutoff_fn_type,
         )
 
         self.charge_predict_0 = ChargePredict(
@@ -315,6 +323,7 @@ class TensorNet2(nn.Module):
                     cutoff_upper,
                     equivariance_invariance_group,
                     dtype,
+                    cutoff_fn_type=cutoff_fn_type,
                 )
                 self.layers.append(_layer)
                 _charge_predict = ChargePredict(
@@ -502,11 +511,12 @@ class Interaction(nn.Module):
         cutoff_upper,
         equivariance_invariance_group,
         dtype=torch.float32,
+        cutoff_fn_type="cosine",
     ):
         super(Interaction, self).__init__()
 
         self.hidden_channels = hidden_channels
-        self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
+        self.cutoff = cutoff_class_mapping[cutoff_fn_type](cutoff_lower, cutoff_upper)
         self.linears_scalar = nn.ModuleList()
         self.linears_scalar.append(
             nn.Linear(num_rbf + 2 * q_dim, self.hidden_channels, bias=True, dtype=dtype)

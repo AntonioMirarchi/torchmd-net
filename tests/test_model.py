@@ -385,3 +385,55 @@ def test_ensemble():
     assert neg_dy_std.shape == deriv.shape
     assert (y_std == 0).all()
     assert (neg_dy_std == 0).all()
+
+
+@mark.parametrize("model_name", [*models.__all_models__, "tensornet2"])
+@mark.parametrize("rbf_type", ["gauss", "expnorm"])
+@mark.parametrize("cutoff_fn_type", ["cosine", "polynomial"])
+def test_cutoff_model(model_name, rbf_type, cutoff_fn_type, tmp_path):
+    """Exercise envelope propagation, force training, scripting and checkpoint reload."""
+    from torchmdnet.models.utils import CosineCutoff, PolynomialCutoff
+
+    args = load_example_args(model_name, remove_prior=True)
+    args.update(
+        embedding_dimension=32,
+        num_rbf=8,
+        num_layers=1,
+        rbf_type=rbf_type,
+        derivative=True,
+        static_shapes=False,
+        q_dim=4,
+        equivariance_invariance_group="O(3)",
+        output_model="Scalar",
+    )
+    # Omission exercises backward compatibility with pre-option checkpoints.
+    # This checkpoint uses current weights, not the legacy TensorNet layout.
+    args.pop("check_errors", None)
+    if cutoff_fn_type == "polynomial":
+        args["cutoff_fn_type"] = cutoff_fn_type
+    model = create_model(args)
+    expected_class = (
+        PolynomialCutoff if cutoff_fn_type == "polynomial" else CosineCutoff
+    )
+    envelopes = [
+        m for m in model.modules() if isinstance(m, (CosineCutoff, PolynomialCutoff))
+    ]
+    assert envelopes and all(isinstance(m, expected_class) for m in envelopes)
+    z, pos, batch = create_example_batch()
+    energy, forces = model(z, pos, batch)
+    assert torch.isfinite(energy).all() and torch.isfinite(forces).all()
+    (energy.square().sum() + forces.square().sum()).backward()
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    assert grads and all(torch.isfinite(g).all() for g in grads)
+
+    scripted = torch.jit.script(model)
+    scripted_energy, scripted_forces = scripted(z, pos.detach().clone(), batch)
+    torch.testing.assert_close(scripted_energy, energy)
+    torch.testing.assert_close(scripted_forces, forces)
+
+    checkpoint = tmp_path / "model.ckpt"
+    torch.save({"hyper_parameters": args, "state_dict": model.state_dict()}, checkpoint)
+    restored = load_model(str(checkpoint))
+    restored_energy, restored_forces = restored(z, pos.detach().clone(), batch)
+    torch.testing.assert_close(restored_energy, energy)
+    torch.testing.assert_close(restored_forces, forces)

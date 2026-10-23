@@ -106,3 +106,45 @@ def test_gated_eq_gradients():
     assert (
         not deriv.isnan().any()
     ), "Encountered NaN gradients while backpropagating the force loss"
+
+
+@mark.parametrize("lower,upper", [(0.0, 5.0), (2.0, 7.0)])
+@mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_polynomial_cutoff(lower, upper, dtype):
+    """Check values and analytic derivatives, including both constant extensions."""
+    from torchmdnet.models.utils import PolynomialCutoff
+
+    cutoff = PolynomialCutoff(lower, upper)
+    t = torch.tensor([-0.1, 0, 0.25, 0.5, 0.75, 1, 1.1], dtype=dtype)
+    distances = (lower + (upper - lower) * t).requires_grad_()
+    values = cutoff(distances)
+    expected = torch.tensor([1, 1, 0.896484375, 0.5, 0.103515625, 0, 0], dtype=dtype)
+    torch.testing.assert_close(values, expected)
+    first = grad(values.sum(), distances, create_graph=True)[0]
+    second = grad(first.sum(), distances)[0]
+    t = t.clamp(0, 1)
+    torch.testing.assert_close(
+        first, -30 * t.square() * (1 - t).square() / (upper - lower)
+    )
+    torch.testing.assert_close(
+        second, -60 * t * (1 - t) * (1 - 2 * t) / (upper - lower) ** 2
+    )
+    torch.testing.assert_close(torch.jit.script(cutoff)(distances), values)
+
+    # Dense samples catch cancellation or negative values near the upper bound.
+    distances = torch.linspace(lower, upper, 10001, dtype=dtype)
+    values = cutoff(distances)
+    assert ((values >= 0) & (values <= 1 + torch.finfo(dtype).eps)).all()
+    # Near the flat lower endpoint, successive values differ by rounding noise.
+    assert (values.diff() <= 4 * torch.finfo(dtype).eps).all()
+
+
+@mark.parametrize(
+    "bounds", [(-1, 5), (5, 5), (6, 5), (0, float("inf")), (float("nan"), 5)]
+)
+def test_polynomial_cutoff_invalid_bounds(bounds):
+    """Reject undefined switching intervals at construction."""
+    from torchmdnet.models.utils import PolynomialCutoff
+
+    with raises(ValueError, match="Cutoff bounds"):
+        PolynomialCutoff(*bounds)

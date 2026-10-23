@@ -11,7 +11,7 @@ from torch.autograd import grad
 from torch import nn, Tensor
 from torchmdnet.models import output_modules
 from torchmdnet.models.wrappers import AtomFilter
-from torchmdnet.models.utils import dtype_mapping
+from torchmdnet.models.utils import dtype_mapping, cutoff_class_mapping
 from torchmdnet import priors
 from lightning_utilities.core.rank_zero import rank_zero_warn
 import warnings
@@ -33,6 +33,9 @@ def create_model(args, prior_model=None, mean=None, std=None):
         nn.Module: An instance of the TorchMD_Net model.
     """
     dtype = dtype_mapping[args["precision"]]
+    cutoff_fn_type = args.get("cutoff_fn_type", "cosine")
+    if cutoff_fn_type not in cutoff_class_mapping:
+        raise ValueError(f"Unknown cutoff function: {cutoff_fn_type}")
     if "box_vecs" not in args:
         args["box_vecs"] = None
     if "static_shapes" not in args:
@@ -49,6 +52,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
         activation=args["activation"],
         cutoff_lower=float(args["cutoff_lower"]),
         cutoff_upper=float(args["cutoff_upper"]),
+        cutoff_fn_type=cutoff_fn_type,
         max_z=args["max_z"],
         max_num_neighbors=args["max_num_neighbors"],
         box_vecs=(

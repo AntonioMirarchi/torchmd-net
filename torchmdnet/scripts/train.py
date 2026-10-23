@@ -21,7 +21,12 @@ from torchmdnet.data import DataModule
 from torchmdnet.loss import loss_class_mapping
 from torchmdnet.models import output_modules
 from torchmdnet.models.model import create_prior_models
-from torchmdnet.models.utils import rbf_class_mapping, act_class_mapping, dtype_mapping
+from torchmdnet.models.utils import (
+    rbf_class_mapping,
+    act_class_mapping,
+    dtype_mapping,
+    cutoff_class_mapping,
+)
 from torchmdnet.utils import (
     LoadFromFile,
     LoadFromCheckpoint,
@@ -120,6 +125,7 @@ def get_argparse():
 
     # other args
     parser.add_argument('--derivative', default=False, type=bool, help='If true, take the derivative of the prediction w.r.t coordinates')
+    parser.add_argument('--cutoff-fn-type', type=str, default='cosine', choices=list(cutoff_class_mapping.keys()), help='Cutoff envelope for radial basis functions and message passing')
     parser.add_argument('--cutoff-lower', type=float, default=0.0, help='Lower cutoff in model')
     parser.add_argument('--cutoff-upper', type=float, default=5.0, help='Upper cutoff in model')
     parser.add_argument('--atom-filter', type=int, default=-1, help='Only sum over atoms with Z > atom_filter')

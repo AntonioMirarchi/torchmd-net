@@ -7,7 +7,7 @@ import torch
 from torch import Tensor, nn
 from torchmdnet.models.utils import (
     NeighborEmbedding,
-    CosineCutoff,
+    cutoff_class_mapping,
     OptimizedDistance,
     rbf_class_mapping,
     act_class_mapping,
@@ -56,6 +56,8 @@ class TorchMD_T(nn.Module):
             (default: :obj:`8`)
         distance_influence (string, optional): Where distance information is used inside
             the attention mechanism. (default: :obj:`"both"`)
+        cutoff_fn_type (str, optional): Cutoff envelope, "cosine" or "polynomial".
+            Applied to radial basis envelopes and message passing. (default: "cosine")
         cutoff_lower (float, optional): Lower cutoff distance for interatomic interactions.
             (default: :obj:`0.0`)
         cutoff_upper (float, optional): Upper cutoff distance for interatomic interactions.
@@ -95,6 +97,7 @@ class TorchMD_T(nn.Module):
         max_num_neighbors=32,
         dtype=torch.float,
         box_vecs=None,
+        cutoff_fn_type="cosine",
     ):
         super(TorchMD_T, self).__init__()
 
@@ -137,7 +140,12 @@ class TorchMD_T(nn.Module):
         )
 
         self.distance_expansion = rbf_class_mapping[rbf_type](
-            cutoff_lower, cutoff_upper, num_rbf, trainable_rbf, dtype=dtype
+            cutoff_lower,
+            cutoff_upper,
+            num_rbf,
+            trainable_rbf,
+            dtype=dtype,
+            cutoff_fn_type=cutoff_fn_type,
         )
         self.neighbor_embedding = (
             NeighborEmbedding(
@@ -147,6 +155,7 @@ class TorchMD_T(nn.Module):
                 cutoff_upper,
                 self.max_z,
                 dtype=dtype,
+                cutoff_fn_type=cutoff_fn_type,
             )
             if neighbor_embedding
             else None
@@ -164,6 +173,7 @@ class TorchMD_T(nn.Module):
                 cutoff_lower,
                 cutoff_upper,
                 dtype=dtype,
+                cutoff_fn_type=cutoff_fn_type,
             )
             self.attention_layers.append(layer)
 
@@ -238,6 +248,7 @@ class MultiHeadAttention(nn.Module):
         cutoff_lower,
         cutoff_upper,
         dtype=torch.float,
+        cutoff_fn_type="cosine",
     ):
         super(MultiHeadAttention, self).__init__()
         assert hidden_channels % num_heads == 0, (
@@ -253,7 +264,7 @@ class MultiHeadAttention(nn.Module):
         self.layernorm = nn.LayerNorm(hidden_channels, dtype=dtype)
         self.act = activation()
         self.attn_activation = attn_activation()
-        self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
+        self.cutoff = cutoff_class_mapping[cutoff_fn_type](cutoff_lower, cutoff_upper)
 
         self.q_proj = nn.Linear(hidden_channels, hidden_channels, dtype=dtype)
         self.k_proj = nn.Linear(hidden_channels, hidden_channels, dtype=dtype)

@@ -71,3 +71,23 @@ def test_hf_setup_is_deferred_to_trainer(tmp_path):
             RuntimeError, match="Reached Trainer.fit without eager setup"
         ):
             main()
+
+
+def test_cutoff_config(tmp_path):
+    """Accept the YAML option, retain the cosine default, and allow CLI overrides."""
+    from torchmdnet.models.model import create_model
+
+    parser = get_argparse()
+    assert parser.parse_args([]).cutoff_fn_type == "cosine"
+    config = tmp_path / "input.yaml"
+    config.write_text("cutoff_fn_type: polynomial\n")
+    assert parser.parse_args(["--conf", str(config)]).cutoff_fn_type == "polynomial"
+    args = parser.parse_args(["--conf", str(config), "--cutoff-fn-type", "cosine"])
+    assert args.cutoff_fn_type == "cosine"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--cutoff-fn-type", "unknown"])
+    # YAML values bypass argparse choices; model construction validates them too.
+    config.write_text("cutoff_fn_type: unknown\n")
+    args = parser.parse_args(["--conf", str(config)])
+    with pytest.raises(ValueError, match="Unknown cutoff function"):
+        create_model(vars(args))

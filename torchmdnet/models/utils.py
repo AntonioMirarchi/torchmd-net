@@ -12,7 +12,9 @@ import warnings
 from ase.data import covalent_radii
 
 
-def visualize_basis(basis_type, num_rbf=50, cutoff_lower=0, cutoff_upper=5):
+def visualize_basis(
+    basis_type, num_rbf=50, cutoff_lower=0, cutoff_upper=5, cutoff_fn_type="cosine"
+):
     """
     Function for quickly visualizing a specific basis. This is useful for inspecting
     the distance coverage of basis functions for non-default lower and upper cutoffs.
@@ -26,6 +28,8 @@ def visualize_basis(basis_type, num_rbf=50, cutoff_lower=0, cutoff_upper=5):
             (default: :obj:`0`)
         cutoff_upper (float, optional): The upper cutoff of the basis.
             (default: :obj:`5`)
+        cutoff_fn_type (str, optional): Envelope for the exponential-normal basis,
+            "cosine" (default) or "polynomial". Gaussian bases have no envelope.
     """
     import matplotlib.pyplot as plt
 
@@ -34,6 +38,7 @@ def visualize_basis(basis_type, num_rbf=50, cutoff_lower=0, cutoff_upper=5):
         "num_rbf": num_rbf,
         "cutoff_lower": cutoff_lower,
         "cutoff_upper": cutoff_upper,
+        "cutoff_fn_type": cutoff_fn_type,
     }
     basis_expansion = rbf_class_mapping[basis_type](**basis_kwargs)
     expanded_distances = basis_expansion(distances)
@@ -52,6 +57,7 @@ class NeighborEmbedding(nn.Module):
         cutoff_upper,
         max_z=100,
         dtype=torch.float32,
+        cutoff_fn_type="cosine",
     ):
         """
         The ET architecture assigns two  learned vectors to each atom type
@@ -62,7 +68,8 @@ class NeighborEmbedding(nn.Module):
 
 
         This embedding allows  the network to store  information about the
-        interaction of atom pairs.
+        interaction of atom pairs. ``cutoff_fn_type`` selects the cosine (default)
+        or polynomial distance envelope.
 
         See eq. 3 in https://arxiv.org/pdf/2202.02541.pdf for more details.
         """
@@ -70,7 +77,7 @@ class NeighborEmbedding(nn.Module):
         self.embedding = nn.Embedding(max_z, hidden_channels, dtype=dtype)
         self.distance_proj = nn.Linear(num_rbf, hidden_channels, dtype=dtype)
         self.combine = nn.Linear(hidden_channels * 2, hidden_channels, dtype=dtype)
-        self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
+        self.cutoff = cutoff_class_mapping[cutoff_fn_type](cutoff_lower, cutoff_upper)
 
         self.reset_parameters()
 
@@ -315,6 +322,12 @@ class OptimizedDistance(torch.nn.Module):
 
 
 class GaussianSmearing(nn.Module):
+    """Gaussian basis without an envelope; ``cutoff_fn_type`` is unused.
+
+    The cutoff argument keeps the constructor compatible with ExpNormalSmearing.
+    Message-passing layers apply the selected cutoff to these basis features.
+    """
+
     def __init__(
         self,
         cutoff_lower=0.0,
@@ -322,6 +335,7 @@ class GaussianSmearing(nn.Module):
         num_rbf=50,
         trainable=True,
         dtype=torch.float32,
+        cutoff_fn_type="cosine",
     ):
         super(GaussianSmearing, self).__init__()
         self.cutoff_lower = cutoff_lower
@@ -355,6 +369,12 @@ class GaussianSmearing(nn.Module):
 
 
 class ExpNormalSmearing(nn.Module):
+    """Exponential-normal basis with a cosine or polynomial cutoff envelope.
+
+    ``cutoff_fn_type`` selects the envelope over [0, cutoff_upper], independently
+    of the lower distance used to place the basis functions. Defaults to "cosine".
+    """
+
     def __init__(
         self,
         cutoff_lower=0.0,
@@ -362,6 +382,7 @@ class ExpNormalSmearing(nn.Module):
         num_rbf=50,
         trainable=True,
         dtype=torch.float32,
+        cutoff_fn_type="cosine",
     ):
         super(ExpNormalSmearing, self).__init__()
         self.cutoff_lower = cutoff_lower
@@ -369,7 +390,8 @@ class ExpNormalSmearing(nn.Module):
         self.num_rbf = num_rbf
         self.trainable = trainable
         self.dtype = dtype
-        self.cutoff_fn = CosineCutoff(0, cutoff_upper)
+        # Preserve the RBF envelope interval [0, cutoff_upper] for both types.
+        self.cutoff_fn = cutoff_class_mapping[cutoff_fn_type](0, cutoff_upper)
         self.alpha = 5.0 / (cutoff_upper - cutoff_lower)
 
         means, betas = self._initial_params()
@@ -527,6 +549,55 @@ class CosineCutoff(nn.Module):
             # remove contributions beyond the cutoff radius
             cutoffs = cutoffs * (distances < self.cutoff_upper)
             return cutoffs
+
+
+class PolynomialCutoff(nn.Module):
+    r"""Quintic switching function with continuous first and second derivatives.
+
+    For :math:`t = (r - r_l) / (r_u - r_l)` in [0, 1], the envelope is
+
+    .. math::
+
+        f(t) = 1 - 10t^3 + 15t^4 - 6t^5.
+
+    It is one below ``cutoff_lower`` and zero above ``cutoff_upper``. Both
+    derivatives vanish at the endpoints. A positive lower cutoff sets the start
+    of the decay; unlike CosineCutoff, it does not suppress shorter distances.
+    Neighbor-list filtering still excludes pairs below ``cutoff_lower``.
+
+    Compared with cosine, the zero extension also has continuous curvature,
+    useful for smooth force derivatives as neighbors cross the upper cutoff.
+    The cubic decay near that cutoff suppresses distant messages more strongly
+    than cosine's quadratic decay; this changes distance weighting and does not
+    guarantee better accuracy or speed. Changing a trained model's envelope
+    changes its predictions.
+
+    Smoothness of the envelope alone does not ensure smooth model predictions:
+    neighbor truncation or count-based normalization can introduce jumps. Use
+    ``cutoff_lower=0`` to avoid abruptly removing pairs at a positive lower bound.
+
+    Args:
+        cutoff_lower (float, optional): Start of the decay. Defaults to 0.0.
+        cutoff_upper (float, optional): End of the decay. Defaults to 5.0.
+            Bounds must be finite and satisfy 0 <= cutoff_lower < cutoff_upper.
+    """
+
+    def __init__(self, cutoff_lower=0.0, cutoff_upper=5.0):
+        super(PolynomialCutoff, self).__init__()
+        if not 0 <= cutoff_lower < cutoff_upper or not math.isfinite(cutoff_upper):
+            raise ValueError(
+                "Cutoff bounds must be finite and satisfy 0 <= lower < upper"
+            )
+        self.cutoff_lower = float(cutoff_lower)
+        self.cutoff_upper = float(cutoff_upper)
+
+    def forward(self, distances: Tensor) -> Tensor:
+        """Return the envelope with the input shape, dtype, and device."""
+        t = (
+            (distances - self.cutoff_lower) / (self.cutoff_upper - self.cutoff_lower)
+        ).clamp(0, 1)
+        # Factoring avoids cancellation and negative values near the upper bound.
+        return (1 - t).pow(3) * (1 + 3 * t + 6 * t.square())
 
 
 class MLP(nn.Module):
@@ -782,6 +853,8 @@ class RepulsionZBL(nn.Module):
         e_atom = e_atom.index_add(0, edge_index[0], e_ij)
         return 0.5 * e_atom  # half: each pair counted twice
 
+
+cutoff_class_mapping = {"cosine": CosineCutoff, "polynomial": PolynomialCutoff}
 
 rbf_class_mapping = {"gauss": GaussianSmearing, "expnorm": ExpNormalSmearing}
 

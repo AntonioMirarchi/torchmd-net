@@ -6,7 +6,7 @@ import torch
 from typing import Optional, Tuple
 from torch import Tensor, nn
 from torchmdnet.models.utils import (
-    CosineCutoff,
+    cutoff_class_mapping,
     OptimizedDistance,
     rbf_class_mapping,
     act_class_mapping,
@@ -179,6 +179,8 @@ class TensorNet(nn.Module):
             backpropagation. (default: :obj:`False`)
         activation (string, optional): The type of activation function to use.
             (default: :obj:`"silu"`)
+        cutoff_fn_type (str, optional): Cutoff envelope, "cosine" or "polynomial".
+            Applied to radial basis envelopes and message passing. (default: "cosine")
         cutoff_lower (float, optional): Lower cutoff distance for interatomic interactions.
             (default: :obj:`0.0`)
         cutoff_upper (float, optional): Upper cutoff distance for interatomic interactions.
@@ -218,6 +220,7 @@ class TensorNet(nn.Module):
         static_shapes=True,
         dtype=torch.float32,
         box_vecs=None,
+        cutoff_fn_type="cosine",
     ):
         super(TensorNet, self).__init__()
 
@@ -244,7 +247,11 @@ class TensorNet(nn.Module):
         self.cutoff_upper = cutoff_upper
         act_class = act_class_mapping[activation]
         self.distance_expansion = rbf_class_mapping[rbf_type](
-            cutoff_lower, cutoff_upper, num_rbf, trainable_rbf
+            cutoff_lower,
+            cutoff_upper,
+            num_rbf,
+            trainable_rbf,
+            cutoff_fn_type=cutoff_fn_type,
         )
         self.tensor_embedding = TensorEmbedding(
             hidden_channels,
@@ -255,6 +262,7 @@ class TensorNet(nn.Module):
             trainable_rbf,
             max_z,
             dtype,
+            cutoff_fn_type=cutoff_fn_type,
         )
 
         self.layers = nn.ModuleList()
@@ -269,6 +277,7 @@ class TensorNet(nn.Module):
                         cutoff_upper,
                         equivariance_invariance_group,
                         dtype,
+                        cutoff_fn_type=cutoff_fn_type,
                     )
                 )
         self.linear = nn.Linear(3 * hidden_channels, hidden_channels, dtype=dtype)
@@ -461,6 +470,7 @@ class TensorEmbedding(nn.Module):
         trainable_rbf=False,
         max_z=128,
         dtype=torch.float32,
+        cutoff_fn_type="cosine",
     ):
         super(TensorEmbedding, self).__init__()
 
@@ -468,7 +478,7 @@ class TensorEmbedding(nn.Module):
         self.distance_proj1 = nn.Linear(num_rbf, hidden_channels, dtype=dtype)
         self.distance_proj2 = nn.Linear(num_rbf, hidden_channels, dtype=dtype)
         self.distance_proj3 = nn.Linear(num_rbf, hidden_channels, dtype=dtype)
-        self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
+        self.cutoff = cutoff_class_mapping[cutoff_fn_type](cutoff_lower, cutoff_upper)
         self.max_z = max_z
         self.emb = nn.Embedding(max_z, hidden_channels, dtype=dtype)
         self.emb2 = nn.Linear(2 * hidden_channels, hidden_channels, dtype=dtype)
@@ -694,12 +704,13 @@ class Interaction(nn.Module):
         cutoff_upper,
         equivariance_invariance_group,
         dtype=torch.float32,
+        cutoff_fn_type="cosine",
     ):
         super(Interaction, self).__init__()
 
         self.num_rbf = num_rbf
         self.hidden_channels = hidden_channels
-        self.cutoff = CosineCutoff(cutoff_lower, cutoff_upper)
+        self.cutoff = cutoff_class_mapping[cutoff_fn_type](cutoff_lower, cutoff_upper)
         self.linears_scalar = nn.ModuleList()
         self.linears_scalar.append(
             nn.Linear(num_rbf, hidden_channels, bias=True, dtype=dtype)

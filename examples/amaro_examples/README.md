@@ -72,3 +72,7 @@ torchmd-train --conf examples/amaro_examples/input.yaml \
 
 To change a per-file stride, edit its JSON record. `properties`, `use_box`, and
 `hf_workers` are dataset-wide settings supplied in `dataset_arg`, not JSON records.
+
+The example selects `cutoff_fn_type: polynomial`, a quintic cutoff with zero first
+and second derivatives at both endpoints. Use `--cutoff-fn-type cosine` after
+`--conf` to select the original envelope.
