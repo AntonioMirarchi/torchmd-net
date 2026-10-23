@@ -138,7 +138,7 @@ def get_argparse():
     parser.add_argument('--wandb-project', default='training_', type=str, help='Define what wandb Project to log to')
     parser.add_argument('--wandb-resume-from-id', default=None, type=str, help='Resume a wandb run from a given run id. The id can be retrieved from the wandb dashboard')
     parser.add_argument('--tensorboard-use', default=False, type=bool, help='Defines if tensor board is used or not')
-
+    parser.add_argument('--accumulate-grad-batches', type=int, default=1, help='Accumulate gradients over this many batches before performing a backward/update pass. This can be used to simulate larger batch sizes than the GPU memory would allow.')
     # fmt: on
     return parser
 
@@ -291,6 +291,7 @@ def main():
         inference_mode=False,
         # Test-during-training requires reloading the dataloaders every epoch
         reload_dataloaders_every_n_epochs=1 if args.test_interval > 0 else 0,
+        accumulate_grad_batches=args.accumulate_grad_batches,
     )
 
     trainer.fit(model, data, ckpt_path=None if args.reset_trainer else args.load_model)
