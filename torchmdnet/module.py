@@ -2,11 +2,9 @@
 # Distributed under the MIT License.
 # (See accompanying file README.md file or copy at http://opensource.org/licenses/MIT)
 
-from collections import defaultdict
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.nn.functional import local_response_norm
 from torch import Tensor
 from typing import Optional, Dict, Tuple
 from lightning import LightningModule
@@ -166,10 +164,12 @@ class LNNP(LightningModule):
         is_val = len(args) == 0 or (len(args) > 0 and args[0] == 0)
         if is_val:
             step_type = {
-                "loss_fn_list": [
-                    ("l1_loss", l1_loss),
-                    (self.hparams.train_loss, self.train_loss_fn),
-                ],
+                "loss_fn_list": (
+                    [("l1_loss", l1_loss)]
+                    if self.hparams.train_loss != "l1_loss"
+                    else []
+                )
+                + [(self.hparams.train_loss, self.train_loss_fn)],
                 "stage": "val",
             }
         else:
@@ -213,11 +213,15 @@ class LNNP(LightningModule):
         )
         if self.hparams.derivative and "neg_dy" in batch:
             loss_neg_y = loss_fn(neg_y, batch.neg_dy)
+            self._record_loss(
+                stage, "neg_dy", loss_name, loss_fn, loss_neg_y, batch.neg_dy.numel()
+            )
             loss_neg_y = self._update_loss_with_ema(
                 stage, "neg_dy", loss_name, loss_neg_y
             )
         if "y" in batch:
             loss_y = loss_fn(y, batch.y)
+            self._record_loss(stage, "y", loss_name, loss_fn, loss_y, batch.y.numel())
             loss_y = self._update_loss_with_ema(stage, "y", loss_name, loss_y)
         return {"y": loss_y, "neg_dy": loss_neg_y}
 
@@ -279,17 +283,10 @@ class LNNP(LightningModule):
             step_losses = self._compute_losses(
                 y, neg_dy, batch, loss_fn, loss_name, stage
             )
-            if self.hparams.neg_dy_weight > 0:
-                self.losses[stage]["neg_dy"][loss_name].append(
-                    step_losses["neg_dy"].detach()
-                )
-            if self.hparams.y_weight > 0:
-                self.losses[stage]["y"][loss_name].append(step_losses["y"].detach())
             total_loss = (
                 step_losses["y"] * self.hparams.y_weight
                 + step_losses["neg_dy"] * self.hparams.neg_dy_weight
             )
-            self.losses[stage]["total"][loss_name].append(total_loss.detach())
         return total_loss
 
     def optimizer_step(self, *args, **kwargs):
@@ -306,70 +303,98 @@ class LNNP(LightningModule):
         super().optimizer_step(*args, **kwargs)
         optimizer.zero_grad()
 
-    def _get_mean_loss_dict_for_type(self, type):
-        # Returns a list with the mean loss for each loss_fn for each stage (train, val, test)
-        # Parameters:
-        # type: either y, neg_dy or total
-        # Returns:
-        # A dict with an entry for each stage (train, val, test) with the mean loss for each loss_fn (e.g. mse_loss)
-        # The key for each entry is "stage_type_loss_fn"
-        assert self.losses is not None
-        mean_losses = {}
-        for stage in ["train", "val", "test"]:
-            for loss_fn_name in self.losses[stage][type].keys():
-                mean_losses[stage + "_" + type + "_" + loss_fn_name] = torch.stack(
-                    self.losses[stage][type][loss_fn_name]
-                ).mean()
-        return mean_losses
+    def _record_loss(self, stage, target, loss_name, loss_fn, loss, count):
+        """Accumulate detached error sums and element counts before loss EMA.
+
+        Energy and force tensors have different denominators. Recover the sum
+        from a mean-reduced loss; sum/unreduced losses already contain the sum.
+        Only these small statistics are retained, not predictions or batch lists.
+        """
+        reduction = getattr(loss_fn, "extra_args", {}).get("reduction", "mean")
+        statistics = self.losses[stage][loss_name]
+        error_sum = loss.detach().to(statistics.dtype).sum()
+        if reduction == "mean":
+            error_sum = error_sum * count
+        index = 0 if target == "y" else 1
+        statistics[index, 0] += error_sum
+        statistics[index, 1] += count
+
+    def _get_epoch_loss_dict(self, stage):
+        """Reduce sums/counts across ranks, then combine energy and force metrics.
+
+        A configured sum reduction remains a sum over the evaluated samples.
+        Mean reduction uses all target elements, rather than weighting batches
+        or ranks equally. Missing targets contribute zero to the total.
+        """
+        result = {}
+        for loss_name, statistics in self.losses[stage].items():
+            statistics = statistics.clone()
+            if self._trainer is not None:
+                statistics = self.trainer.strategy.reduce(statistics, reduce_op="sum")
+            if statistics[:, 1].sum() == 0:
+                continue  # This loss/stage had no labels, e.g. an unused test loader.
+            reduction = "mean"
+            if loss_name == self.hparams.train_loss and stage != "test":
+                reduction = self.train_loss_fn.extra_args.get("reduction", "mean")
+            values = statistics[:, 0]
+            if reduction != "sum":
+                values = values / statistics[:, 1].clamp_min(1)
+            total = values.new_zeros(())
+            for index, target in enumerate(("y", "neg_dy")):
+                weight = getattr(self.hparams, f"{target}_weight")
+                if weight > 0:
+                    result[f"{stage}_{target}_{loss_name}"] = values[index]
+                total = total + weight * values[index]
+            result[f"{stage}_total_{loss_name}"] = total
+        return result
+
+    def on_train_epoch_start(self):
+        """Start a fresh training accumulator, independent of validation runs."""
+        self._reset_losses_dict("train")
+
+    def on_validation_epoch_start(self):
+        """Discard sanity-check/previous validation statistics, including test-loader data."""
+        self._reset_losses_dict("val")
+        self._reset_losses_dict("test")
+
+    def on_test_epoch_start(self):
+        """Start a fresh accumulator for each standalone test run."""
+        self._reset_losses_dict("test")
 
     def on_validation_epoch_end(self):
         if not self.trainer.sanity_checking:
-            # construct dict of logged metrics
             result_dict = {
                 "epoch": float(self.current_epoch),
-                "lr": self.trainer.optimizers[0].param_groups[0]["lr"],
             }
-            result_dict.update(self._get_mean_loss_dict_for_type("total"))
-            result_dict.update(self._get_mean_loss_dict_for_type("y"))
-            result_dict.update(self._get_mean_loss_dict_for_type("neg_dy"))
-            self.log_dict(result_dict, sync_dist=True)
-
-        self._reset_losses_dict()
+            if self.trainer.optimizers:
+                result_dict["lr"] = self.trainer.optimizers[0].param_groups[0]["lr"]
+            result_dict.update(self._get_epoch_loss_dict("val"))
+            # Keep training monitors available to validation-time callbacks.
+            result_dict.update(self._get_epoch_loss_dict("train"))
+            result_dict.update(self._get_epoch_loss_dict("test"))
+            # Statistics have already been synchronized across ranks.
+            self.log_dict(result_dict, sync_dist=False)
 
     def on_test_epoch_end(self):
-        # Log all test losses
-        if not self.trainer.sanity_checking:
-            result_dict = {}
-            result_dict.update(self._get_mean_loss_dict_for_type("total"))
-            result_dict.update(self._get_mean_loss_dict_for_type("y"))
-            result_dict.update(self._get_mean_loss_dict_for_type("neg_dy"))
-            # Get only test entries
-            result_dict = {k: v for k, v in result_dict.items() if k.startswith("test")}
-            self.log_dict(result_dict, sync_dist=True)
+        self.log_dict(self._get_epoch_loss_dict("test"), sync_dist=False)
 
     def on_train_epoch_end(self):
-        # Log all train losses
-        if not self.trainer.sanity_checking:
-            result_dict = {}
-            result_dict.update(self._get_mean_loss_dict_for_type("total"))
-            result_dict.update(self._get_mean_loss_dict_for_type("y"))
-            result_dict.update(self._get_mean_loss_dict_for_type("neg_dy"))
-            # Get only train entries
-            result_dict = {
-                k: v for k, v in result_dict.items() if k.startswith("train")
-            }
-            self.log_dict(result_dict, sync_dist=True)
+        self.log_dict(self._get_epoch_loss_dict("train"), sync_dist=False)
 
-    def _reset_losses_dict(self):
-        # Losses has an entry for each stage in ["train", "val", "test"]
-        # Each entry has an entry with "total", "y" and "neg_dy"
-        # Each of these entries has an entry for each loss_fn (e.g. mse_loss)
-        # The loss_fn values are not known in advance
-        self.losses = {}
-        for stage in ["train", "val", "test"]:
-            self.losses[stage] = {}
-            for loss_type in ["total", "y", "neg_dy"]:
-                self.losses[stage][loss_type] = defaultdict(list)
+    def _reset_losses_dict(self, stage=None):
+        """Allocate error-sum/count pairs for energy and force losses on this device."""
+        if stage is None:
+            self.losses = {}
+        # Use double precision for long epochs where supported (MPS lacks float64).
+        dtype = torch.float32 if self.device.type == "mps" else torch.float64
+        for name in ("train", "val", "test") if stage is None else (stage,):
+            loss_names = [self.hparams.train_loss] if name == "train" else ["l1_loss"]
+            if name == "val" and self.hparams.train_loss not in loss_names:
+                loss_names.append(self.hparams.train_loss)
+            self.losses[name] = {
+                loss_name: torch.zeros(2, 2, dtype=dtype, device=self.device)
+                for loss_name in loss_names
+            }
 
     def _reset_ema_dict(self):
         self.ema = {}
