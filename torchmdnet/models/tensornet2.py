@@ -232,6 +232,10 @@ class TensorNet2(nn.Module):
             output is done by appending to the node features x that will be passed to the output 
             model. If True the output model must be compatible with the output charges.
             (default: :obj:`False`)
+        distance_strategy (str, optional): Neighbor-list algorithm, "brute" or "cell".
+            (default: :obj:`"brute"`)
+        distance_include_loop (bool, optional): Include self-edges in the neighbor graph.
+            Changing this alters the model, not just its runtime. (default: :obj:`True`)
         repulsion (bool, optional): Whether to add the ZBL short-range repulsion term
             (see :py:class:`torchmdnet.models.utils.RepulsionZBL`) on top of the learned energy.
             (default: :obj:`False`)
@@ -257,6 +261,8 @@ class TensorNet2(nn.Module):
         output_charges=False,
         repulsion=False,
         cutoff_fn_type="cosine",
+        distance_strategy="brute",
+        distance_include_loop=True,
     ):
         super(TensorNet2, self).__init__()
 
@@ -362,7 +368,8 @@ class TensorNet2(nn.Module):
             cutoff_upper,
             max_num_pairs=-max_num_neighbors,
             return_vecs=True,
-            loop=True,
+            loop=distance_include_loop,
+            strategy=distance_strategy,
             resize_to_fit=not self.static_shapes,
             box=box_vecs,
             long_edge_index=True,

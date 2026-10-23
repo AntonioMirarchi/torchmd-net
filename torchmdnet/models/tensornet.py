@@ -199,6 +199,10 @@ class TensorNet(nn.Module):
             where `box_vectors[0] = a`, `box_vectors[1] = b`, and `box_vectors[2] = c`.
             If this is omitted, periodic boundary conditions are not applied.
             (default: :obj:`None`)
+        distance_strategy (str, optional): Neighbor-list algorithm, "brute" or "cell".
+            (default: :obj:`"brute"`)
+        distance_include_loop (bool, optional): Include self-edges in the neighbor graph.
+            Changing this alters the model, not just its runtime. (default: :obj:`True`)
         static_shapes (bool, optional): Whether to enforce static shapes.
             Makes the model CUDA-graph compatible.
             (default: :obj:`True`)
@@ -221,6 +225,8 @@ class TensorNet(nn.Module):
         dtype=torch.float32,
         box_vecs=None,
         cutoff_fn_type="cosine",
+        distance_strategy="brute",
+        distance_include_loop=True,
     ):
         super(TensorNet, self).__init__()
 
@@ -292,7 +298,8 @@ class TensorNet(nn.Module):
             cutoff_upper,
             max_num_pairs=-max_num_neighbors,
             return_vecs=True,
-            loop=True,
+            loop=distance_include_loop,
+            strategy=distance_strategy,
             resize_to_fit=not self.static_shapes,
             box=box_vecs,
             long_edge_index=True,

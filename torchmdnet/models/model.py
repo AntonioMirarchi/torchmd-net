@@ -43,6 +43,17 @@ def create_model(args, prior_model=None, mean=None, std=None):
     if "vector_cutoff" not in args:
         args["vector_cutoff"] = False
 
+    distance_strategy = args.get("distance_strategy", "brute")
+    distance_include_loop = args.get("distance_include_loop", True)
+    if distance_strategy not in ("brute", "cell"):
+        raise ValueError(f"Unknown distance strategy: {distance_strategy}")
+    if not isinstance(distance_include_loop, bool):
+        raise ValueError("distance_include_loop must be a boolean")
+    if args["model"] not in ("tensornet", "tensornet2"):
+        if distance_strategy != "brute" or not distance_include_loop:
+            raise ValueError(
+                "Neighbor-list options currently require TensorNet or TensorNet2"
+            )
     if args.get("q_dim", 0) != 0 and args["model"] != "tensornet2":
         raise ValueError("q_dim requires model='tensornet2'")
 
@@ -108,6 +119,8 @@ def create_model(args, prior_model=None, mean=None, std=None):
         representation_model = TensorNet(
             equivariance_invariance_group=args["equivariance_invariance_group"],
             static_shapes=args["static_shapes"],
+            distance_strategy=distance_strategy,
+            distance_include_loop=distance_include_loop,
             **shared_args,
         )
 
@@ -122,6 +135,8 @@ def create_model(args, prior_model=None, mean=None, std=None):
             q_dim=args.get("q_dim", 0),
             output_charges=True if "Coul" in args["output_model"] else False,
             repulsion=args.get("repulsion", False),
+            distance_strategy=distance_strategy,
+            distance_include_loop=distance_include_loop,
             **shared_args,
         )
     else:

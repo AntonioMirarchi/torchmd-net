@@ -117,6 +117,8 @@ def get_argparse():
 
     # TensorNet specific
     parser.add_argument('--q-dim', type=int, default=0, help='Latent charge channel size for TensorNet2 NQE blocks; zero disables NQE.')
+    parser.add_argument('--distance-strategy', type=str, default='brute', choices=['brute', 'cell'], help='Neighbor-list strategy for TensorNet and TensorNet2.')
+    parser.add_argument('--distance-include-loop', action=argparse.BooleanOptionalAction, default=True, help='Include self-edges in TensorNet/TensorNet2 neighbor lists; use --no-distance-include-loop to disable.')
     parser.add_argument('--equivariance-invariance-group', type=str, default='O(3)', help='Equivariance and invariance group of TensorNet')
     parser.add_argument('--box-vecs', type=lambda x: list(yaml.safe_load(x)), default=None, help="""Box vectors for periodic boundary conditions. The vectors `a`, `b`, and `c` represent a triclinic box and must satisfy
         certain requirements:
