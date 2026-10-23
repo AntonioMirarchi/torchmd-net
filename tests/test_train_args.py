@@ -91,3 +91,56 @@ def test_cutoff_config(tmp_path):
     args = parser.parse_args(["--conf", str(config)])
     with pytest.raises(ValueError, match="Unknown cutoff function"):
         create_model(vars(args))
+
+
+def test_force_reduction_config(tmp_path):
+    """Parse YAML/CLI overrides and loss kwargs without requiring reduction=none."""
+    parser = get_argparse()
+    assert parser.parse_args([]).force_loss_reduction == "atom_mean"
+    config = tmp_path / "input.yaml"
+    config.write_text(
+        "force_loss_reduction: graph_mean\ntrain_loss: huber_loss\ntrain_loss_arg:\n  delta: 2.5\n"
+    )
+    args = parser.parse_args(["--conf", str(config)])
+    assert args.force_loss_reduction == "graph_mean"
+    assert args.train_loss_arg == {"delta": 2.5}
+    args = parser.parse_args(
+        [
+            "--conf",
+            str(config),
+            "--force-loss-reduction",
+            "graph_mean_inv_sqrt",
+            "--train-loss-arg",
+            '{"delta": 1.5}',
+        ]
+    )
+    assert args.force_loss_reduction == "graph_mean_inv_sqrt"
+    assert args.train_loss_arg == {"delta": 1.5}
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--force-loss-reduction", "unknown"])
+
+
+@pytest.mark.parametrize(
+    "settings,message",
+    [
+        ({"force_loss_reduction": "unknown"}, "Unknown force_loss_reduction"),
+        ({"train_loss_arg": "not a dictionary"}, "must be a dictionary"),
+        ({"train_loss_arg": []}, "must be a dictionary"),
+        (
+            {"train_loss_arg": {"reduction": "none"}},
+            "unreduced force errors are computed internally",
+        ),
+        (
+            {"force_loss_reduction": "graph_mean", "train_loss_arg": {"reduce": True}},
+            "deprecated",
+        ),
+    ],
+)
+def test_force_reduction_invalid_config(settings, message):
+    """Invalid YAML/checkpoint arguments fail before constructing the model."""
+    from torchmdnet.module import LNNP
+
+    args = vars(get_argparse().parse_args([]))
+    args.update(settings)
+    with pytest.raises(ValueError, match=message):
+        LNNP(args)

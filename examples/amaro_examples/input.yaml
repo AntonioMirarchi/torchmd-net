@@ -31,6 +31,7 @@ prior_model: null
 derivative: true
 y_weight: 0.0
 neg_dy_weight: 1.0
+force_loss_reduction: graph_mean  # Equal weight per structure, independent of atom count.
 charge: false
 spin: false
 standardize: false

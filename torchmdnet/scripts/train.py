@@ -18,7 +18,7 @@ from lightning.pytorch.callbacks import (
 from torchmdnet.module import LNNP
 from torchmdnet import datasets, priors, models
 from torchmdnet.data import DataModule
-from torchmdnet.loss import loss_class_mapping
+from torchmdnet.loss import loss_class_mapping, force_loss_reductions
 from torchmdnet.models import output_modules
 from torchmdnet.models.model import create_prior_models
 from torchmdnet.models.utils import (
@@ -86,7 +86,8 @@ def get_argparse():
     parser.add_argument('--y-weight', default=1.0, type=float, help='Weighting factor for y label in the loss function')
     parser.add_argument('--neg-dy-weight', default=1.0, type=float, help='Weighting factor for neg_dy label in the loss function')
     parser.add_argument('--train-loss', default='mse_loss', type=str, choices=loss_class_mapping.keys(), help='Loss function to use during training')
-    parser.add_argument('--train-loss-arg', default=None, help='Additional arguments for the loss function. Needs to be a dictionary.')
+    parser.add_argument('--train-loss-arg', default=None, type=json.loads, help='Additional loss arguments as a JSON dictionary on the CLI or a YAML mapping.')
+    parser.add_argument('--force-loss-reduction', default='atom_mean', choices=force_loss_reductions, help='Force loss only: atom_mean preserves the configured reduction; graph_mean averages each graph equally; graph_mean_inv_sqrt additionally weights each graph mean by 1/sqrt(node count).')
 
     # model architecture
     parser.add_argument('--model', type=str, default='graph-network', choices=models.__all_models__, help='Which model to train')

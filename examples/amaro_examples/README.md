@@ -76,3 +76,9 @@ To change a per-file stride, edit its JSON record. `properties`, `use_box`, and
 The example selects `cutoff_fn_type: polynomial`, a quintic cutoff with zero first
 and second derivatives at both endpoints. Use `--cutoff-fn-type cosine` after
 `--conf` to select the original envelope.
+
+`force_loss_reduction: graph_mean` gives each structure equal weight in the force
+loss. At batch size one, its batch loss matches ordinary atom averaging, but its
+epoch metric weights structures equally. Use `--force-loss-reduction atom_mean`
+for the original reduction, or `graph_mean_inv_sqrt` to additionally scale each
+structure’s mean force loss by `1/sqrt(N)`. Energy reduction is independent.

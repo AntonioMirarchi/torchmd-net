@@ -5,3 +5,5 @@ loss_class_mapping = {
     "l1_loss": l1_loss,
     "huber_loss": huber_loss,
 }
+
+force_loss_reductions = ("atom_mean", "graph_mean", "graph_mean_inv_sqrt")
