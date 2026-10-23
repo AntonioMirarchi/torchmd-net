@@ -116,6 +116,7 @@ def get_argparse():
     parser.add_argument('--vector-cutoff', type=bool, default=False, help='If true, the vector features are weighted by the cutoff function during message passing, forcing the energy to be continuous at the cutoff.')
 
     # TensorNet specific
+    parser.add_argument('--q-dim', type=int, default=0, help='Latent charge channel size for TensorNet2 NQE blocks; zero disables NQE.')
     parser.add_argument('--equivariance-invariance-group', type=str, default='O(3)', help='Equivariance and invariance group of TensorNet')
     parser.add_argument('--box-vecs', type=lambda x: list(yaml.safe_load(x)), default=None, help="""Box vectors for periodic boundary conditions. The vectors `a`, `b`, and `c` represent a triclinic box and must satisfy
         certain requirements:

@@ -43,6 +43,9 @@ def create_model(args, prior_model=None, mean=None, std=None):
     if "vector_cutoff" not in args:
         args["vector_cutoff"] = False
 
+    if args.get("q_dim", 0) != 0 and args["model"] != "tensornet2":
+        raise ValueError("q_dim requires model='tensornet2'")
+
     shared_args = dict(
         hidden_channels=args["embedding_dimension"],
         num_layers=args["num_layers"],

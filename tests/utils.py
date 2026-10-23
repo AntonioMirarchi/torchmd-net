@@ -10,7 +10,7 @@ from torch_geometric.data import Dataset, Data
 
 def load_example_args(model_name, remove_prior=False, config_file=None, **kwargs):
     if config_file is None:
-        if model_name == "tensornet":
+        if model_name in ("tensornet", "tensornet2"):
             config_file = join(
                 dirname(dirname(__file__)), "examples", "TensorNet-QM9.yaml"
             )
@@ -21,6 +21,8 @@ def load_example_args(model_name, remove_prior=False, config_file=None, **kwargs
     if "precision" not in args:
         args["precision"] = 32
     args["model"] = model_name
+    if model_name == "tensornet2":
+        args["q_dim"] = 16
     args["seed"] = 1234
     if remove_prior:
         args["prior_model"] = None

@@ -6,7 +6,6 @@ from torchmdnet.models.utils import (
     OptimizedDistance,
     rbf_class_mapping,
     act_class_mapping,
-    scatter,
     MLP,
 )
 from warnings import warn
@@ -47,6 +46,14 @@ __all__ = ["TensorNet2"]
 
 
 class ChargePredict(nn.Module):
+    """Predict latent charge channels and redistribute the total-charge residual.
+
+    Each channel targets the molecular charge Q (zero when omitted). The small
+    denominator regularizer makes this constraint approximate, especially when
+    predicted redistribution weights are near zero. These latent channels need
+    not represent physical partial charges without additional supervision.
+    """
+
     def __init__(self, hidden_channels, activation, q_dim=16, static_shapes=False):
         super(ChargePredict, self).__init__()
         self.q_dim = q_dim
@@ -184,8 +191,10 @@ class TensorNet2(nn.Module):
     Args:
         hidden_channels (int, optional): Hidden embedding size.
             (default: :obj:`128`)
-        q_dim (int, optional): Charge channel size.
-            (default: :obj:`16`)
+        q_dim (int, optional): Latent charge channels used by NQE interactions.
+            Zero disables charge prediction. A Scalar head can use positive q_dim
+            without adding Coulomb energy; no partial-charge labels are required.
+            (default: :obj:`16`; the training CLI defaults to 0)
         num_layers (int, optional): The number of interaction layers.
             (default: :obj:`2`)
         num_rbf (int, optional): The number of radial basis functions :math:`\mu`.
@@ -251,6 +260,10 @@ class TensorNet2(nn.Module):
     ):
         super(TensorNet2, self).__init__()
 
+        if q_dim < 0:
+            raise ValueError("q_dim must be non-negative")
+        if output_charges and q_dim == 0:
+            raise ValueError("A charge-consuming output head requires q_dim > 0")
         self.q_dim = q_dim
         self.output_charges = output_charges
 
@@ -306,8 +319,11 @@ class TensorNet2(nn.Module):
             cutoff_fn_type=cutoff_fn_type,
         )
 
-        self.charge_predict_0 = ChargePredict(
-            hidden_channels, activation, self.q_dim, static_shapes
+        # Only create predictors whose charges reach an interaction or output head.
+        self.charge_predict_0 = (
+            ChargePredict(hidden_channels, activation, self.q_dim, static_shapes)
+            if q_dim > 0 and (num_layers > 0 or output_charges)
+            else None
         )
 
         self.layers = nn.ModuleList()
@@ -326,10 +342,13 @@ class TensorNet2(nn.Module):
                     cutoff_fn_type=cutoff_fn_type,
                 )
                 self.layers.append(_layer)
-                _charge_predict = ChargePredict(
-                    hidden_channels, activation, self.q_dim, static_shapes
+                self.charge_predicts.append(
+                    ChargePredict(
+                        hidden_channels, activation, self.q_dim, static_shapes
+                    )
+                    if q_dim > 0 and (l < num_layers - 1 or output_charges)
+                    else nn.Identity()
                 )
-                self.charge_predicts.append(_charge_predict)
 
         self.linear = nn.Linear(3 * hidden_channels, hidden_channels, dtype=dtype)
         self.out_norm = nn.LayerNorm(3 * hidden_channels, dtype=dtype)
@@ -360,9 +379,41 @@ class TensorNet2(nn.Module):
             layer.reset_parameters()
         self.linear.reset_parameters()
         self.out_norm.reset_parameters()
-        self.charge_predict_0.reset_parameters()
+        if self.charge_predict_0 is not None:
+            self.charge_predict_0.reset_parameters()
         for layer in self.charge_predicts:
-            layer.reset_parameters()
+            if not isinstance(layer, nn.Identity):
+                layer.reset_parameters()
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Accept old checkpoints containing predictors that never affected outputs."""
+        unused = []
+        if self.charge_predict_0 is None:
+            unused.append(prefix + "charge_predict_0.")
+        for i, predictor in enumerate(self.charge_predicts):
+            if isinstance(predictor, nn.Identity):
+                unused.append(prefix + f"charge_predicts.{i}.")
+        for key in list(state_dict):
+            if key.startswith(tuple(unused)):
+                del state_dict[key]
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
     def forward(
         self,
@@ -429,7 +480,9 @@ class TensorNet2(nn.Module):
         # hasattr(representation_model, "extra_energy"). No-op (None) by default.
         if self.repulsion is not None:
             e_rep = self.repulsion(zp, edge_index, edge_weight)  # [zp.shape[0]]
-            self.extra_energy = e_rep[: batch.shape[0]].unsqueeze(-1)  # real atoms only, [nr, 1]
+            self.extra_energy = e_rep[: batch.shape[0]].unsqueeze(
+                -1
+            )  # real atoms only, [nr, 1]
         else:
             self.extra_energy = None
 
@@ -447,27 +500,23 @@ class TensorNet2(nn.Module):
 
         X = self.tensor_embedding(zp, graph_info, edge_weight, edge_vec, edge_attr)
 
-        # from the initial embedding we compute some partial charges
-        charges_0 = self.charge_predict_0(X, batch, Q)
+        # With q_dim=0, empty charge features disable NQE without unused MLPs.
+        charges = X.new_zeros((X.shape[0], self.q_dim))
+        if self.charge_predict_0 is not None:
+            charges = self.charge_predict_0(X, batch, Q)
+        charge_list = [charges] if self.output_charges else []
 
-        # we save them for the ouput layer
-        charge_list = [charges_0]
+        # Identity placeholders keep both ModuleLists aligned in TorchScript and
+        # preserve checkpoint names without creating unused trainable parameters.
+        for layer, charge_predictor in zip(self.layers, self.charge_predicts):
+            X = layer(X, charges, graph_info, edge_weight, edge_attr)
+            if not isinstance(charge_predictor, nn.Identity):
+                charges = charge_predictor(X, batch, Q)
+                if self.output_charges:
+                    charge_list.append(charges)
 
-        old_charges = charges_0  # intermediate so we can loop
-
-        for l, (layer, charge_predictor) in enumerate(
-            zip(self.layers, self.charge_predicts)
-        ):
-            # updated node tensor feratures
-            X = layer(X, old_charges, graph_info, edge_weight, edge_attr)
-
-            # predict new charges
-            new_charges = charge_predictor(X, batch, Q)
-            charge_list.append(new_charges)
-            old_charges = new_charges
-
-        # we will have (l+1 * qdim) charges for each node
-        charges = torch.cat(charge_list, dim=-1)
+        if self.output_charges:
+            charges = torch.cat(charge_list, dim=-1)
 
         if not self.opt:
             I, A, S = decompose_tensor(X)

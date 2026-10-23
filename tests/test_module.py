@@ -105,7 +105,7 @@ def test_dummy_train(model_name, use_atomref, precision, tmpdir):
         accelerator = "cpu"
 
     extra_args = {}
-    if model_name != "tensornet":
+    if model_name not in ("tensornet", "tensornet2"):
         extra_args["num_heads"] = 2
 
     args = load_example_args(
