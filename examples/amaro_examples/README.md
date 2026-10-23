@@ -14,6 +14,18 @@ only, removes hydrogen atoms, and reads one mdCATH Parquet file at each of
 random over conformations, as in the rest of the repository.
 This is a training smoke test, not a benchmark split.
 
+To test latent NQE with the same scalar energy head and force-only labels:
+
+```bash
+torchmd-train --conf examples/amaro_examples/input.yaml --model tensornet2 --q-dim 8
+```
+
+This retains `output_model: Scalar` and `charge: false`: the model learns latent
+charge channels for neutral structures without adding a Coulomb energy term.
+`q_dim: 0` disables NQE. Both TensorNet variants accept `--distance-strategy cell`
+and `--distance-include-loop`; defaults are brute-force neighbors with
+self-edges. Removing self-edges changes the model's behavior.
+
 With this configuration, dataset preparation and setup run inside Lightning's
 training lifecycle. Global rank zero builds the shared caches, all ranks wait,
 and then each rank opens them. Lightning partitions sample indices across GPU
