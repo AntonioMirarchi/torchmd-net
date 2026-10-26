@@ -9,6 +9,7 @@ from ase.io import read
 
 from torchmdnet.calculators import TMDNETCalculator
 from torchmdnet.models.model import create_model, load_model
+from torchmdnet.scripts.train import get_argparse
 from utils import load_example_args
 
 
@@ -73,11 +74,14 @@ def test_reaction_field_dielectric_reaches_output_model():
 
 @pytest.mark.parametrize("bias", [False, True])
 def test_scalar_output_checkpoint_bias(tmp_path, bias):
-    args = load_example_args("tensornet", remove_prior=True)
-    args.pop("check_errors", None)
+    option = (
+        "--output-mlp-bias-on-last-layer"
+        if bias
+        else "--no-output-mlp-bias-on-last-layer"
+    )
+    args = vars(get_argparse().parse_args(["--model", "tensornet", option]))
     args.update(
-        embedding_dimension=8, num_layers=1, num_rbf=4,
-        output_mlp_num_layers=1, output_mlp_bias_on_last_layer=bias,
+        embedding_dimension=8, num_layers=1, num_rbf=4, output_mlp_num_layers=1
     )
     model = create_model(args)
     path = tmp_path / "output.ckpt"

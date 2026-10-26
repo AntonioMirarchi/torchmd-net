@@ -172,6 +172,31 @@ def test_cutoff_config(tmp_path):
         create_model(vars(args))
 
 
+def test_output_mlp_bias_config(tmp_path):
+    """Support both CLI switches, YAML booleans, and saved configuration reloads."""
+    from torchmdnet.utils import save_argparse
+
+    parser = get_argparse()
+    assert parser.parse_args([]).output_mlp_bias_on_last_layer is True
+    config = tmp_path / "bias.yaml"
+    config.write_text("output_mlp_bias_on_last_layer: false\n")
+    args = parser.parse_args(["--conf", str(config)])
+    assert args.output_mlp_bias_on_last_layer is False
+    args = parser.parse_args(
+        ["--conf", str(config), "--output-mlp-bias-on-last-layer"]
+    )
+    assert args.output_mlp_bias_on_last_layer is True
+    config.write_text("output_mlp_bias_on_last_layer: true\n")
+    args = parser.parse_args(
+        ["--conf", str(config), "--no-output-mlp-bias-on-last-layer"]
+    )
+    assert args.output_mlp_bias_on_last_layer is False
+    saved = tmp_path / "input.yaml"
+    save_argparse(args, str(saved), exclude=["conf"])
+    restored = parser.parse_args(["--conf", str(saved)])
+    assert restored.output_mlp_bias_on_last_layer is False
+
+
 def test_force_reduction_config(tmp_path):
     """Parse YAML/CLI overrides and loss kwargs without requiring reduction=none."""
     parser = get_argparse()
