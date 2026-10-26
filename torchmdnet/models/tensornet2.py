@@ -392,6 +392,11 @@ class TensorNet2(nn.Module):
             if not isinstance(layer, nn.Identity):
                 layer.reset_parameters()
 
+    def setup_for_inference(self, z, batch):
+        """Cache species-pair embeddings for fixed species and frozen weights."""
+        self.tensor_embedding.setup_for_inference(z, batch)
+        self.inference_mode = True
+
     def _load_from_state_dict(
         self,
         state_dict,

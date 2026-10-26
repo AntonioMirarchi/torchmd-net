@@ -318,6 +318,7 @@ class TensorNet(nn.Module):
         self.out_norm.reset_parameters()
 
     def setup_for_inference(self, z, batch):
+        """Cache species-pair embeddings for fixed species and frozen weights."""
         self.tensor_embedding.setup_for_inference(z, batch)
         self.inference_mode = True
 
@@ -524,20 +525,28 @@ class TensorEmbedding(nn.Module):
         self.inference_mode = False
 
     def setup_for_inference(self, z, batch):
+        """Precompute coordinate-independent messages before inference or compilation.
 
-        # we can precompute the edge-wise atomic embeddings
+        Call after moving the model to its inference device/dtype. Rebuild the
+        cache if the model weights or the set of species changes. Coordinate
+        gradients are still computed normally during force evaluation.
+        """
         with torch.no_grad():
             max_z = z.max().item()
-            _zij_map = torch.zeros((max_z + 1, max_z + 1, self.hidden_channels))
+            _zij_map = self.emb.weight.new_zeros(
+                (max_z + 1, max_z + 1, self.hidden_channels)
+            )
+            # Static neighbor lists also index a padding atom with species zero.
+            species = torch.unique(torch.cat((z, z.new_zeros(1))))
 
-            for zi in torch.unique(z):
+            for zi in species:
                 Zi = self.emb(zi)
-                for zj in torch.unique(z):
+                for zj in species:
                     Zj = self.emb(zj)
                     _zij_map[zi, zj] = self.emb2(torch.cat([Zi, Zj], dim=-1))
 
         del self.Zij_map
-        self.register_buffer("Zij_map", _zij_map)
+        self.register_buffer("Zij_map", _zij_map, persistent=False)
         self.inference_mode = True
 
     def _get_atomic_number_message(self, z: Tensor, edge_index: Tensor) -> Tensor:
