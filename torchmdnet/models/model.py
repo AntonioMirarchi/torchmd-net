@@ -559,6 +559,32 @@ class TorchMD_Net(nn.Module):
             for prior in self.prior_model:
                 prior.reset_parameters()
 
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Ignore the obsolete output-head std buffer, retaining strict loading.
+
+        The prefix handles standalone models, Lightning modules, and EMA copies.
+        The active model-wide mean/std buffers are loaded normally.
+        """
+        state_dict.pop(prefix + "output_model.output_std", None)
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
     def forward(
         self,
         z: Tensor,
