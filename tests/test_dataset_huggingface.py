@@ -284,3 +284,196 @@ def test_hf_force_scale_and_per_file_stride(tmp_path, parquet_file):
     # The second file is rejected only after force conversion.
     filtered = HFDataset(tmp_path / "cache", config, properties=[], max_gradient=0.5)
     assert len(filtered) == 3
+
+
+def test_hf_molecule_exclusions_across_parallel_shards(tmp_path, parquet_file):
+    """Remove every matching conformation before atom-array decoding and sampling."""
+    first = parquet_file(
+        "first.parquet",
+        mol_id=["keep", "drop"] * 4,
+        # Excluded rows would fail the force-shape check if decoded first.
+        forces=[[[0.1, 0, 0]] * (2 if i % 2 else 3) for i in range(8)],
+    )
+    second = parquet_file("second.parquet", mol_id=["drop"] * 8)
+    dataset = HFDataset(
+        tmp_path / "cache",
+        [first, second],
+        mol_ids_to_exclude=["drop"],
+        properties=[],
+        hf_workers=2,
+    )
+    assert [dataset[i].pos[0, 0].item() for i in range(len(dataset))] == [0, 2, 4, 6]
+    assert set(dataset.dataset.column_names) == {"atomic_numbers", "positions", "forces"}
+    sampled = HFDataset(
+        tmp_path / "cache",
+        first,
+        mol_ids_to_exclude=["drop"],
+        properties=[],
+        stride=3,
+        sample_fraction=0.5,
+    )
+    assert len(sampled) == 1  # Original rows 0 and 6 survive before sampling.
+    assert sampled[0].pos[0, 0].item() in (0, 6)
+
+
+def test_hf_numeric_molecule_exclusions(tmp_path, parquet_file):
+    path = parquet_file(mol_id=[1, 2, 1, 3, 2, 3, 1, 3])
+    dataset = HFDataset(tmp_path / "cache", path, mol_ids_to_exclude=[" 1 ", 2])
+    assert [dataset[i].pos[0, 0].item() for i in range(len(dataset))] == [3, 5, 7]
+
+
+def test_hf_molecule_exclusion_files_and_cache_keys(tmp_path, parquet_file, monkeypatch):
+    """Hash file contents canonically; preserve existing unfiltered cache keys."""
+    import torchmdnet.datasets.huggingface as implementation
+
+    path = parquet_file(mol_id=["a", "b", "a", "b", "c", "c", None, "kept"])
+    root = tmp_path / "cache"
+    ids = tmp_path / "excluded.txt"
+    ids.write_text("b\n\n")
+    first = HFDataset(root, path, mol_ids_to_exclude=ids)
+    assert [first[i].pos[0, 0].item() for i in range(len(first))] == [0, 2, 4, 5, 6, 7]
+    ids.write_text("a\n")  # Same file and size, different excluded molecules.
+    changed = HFDataset(root, path, mol_ids_to_exclude=ids)
+    assert first.processed_paths != changed.processed_paths
+    assert [changed[i].pos[0, 0].item() for i in range(len(changed))] == [1, 3, 4, 5, 6, 7]
+    unfiltered = HFDataset(root, path)
+    ids.write_text("\n")
+    assert (
+        HFDataset(root, path, mol_ids_to_exclude=ids).processed_paths
+        == unfiltered.processed_paths
+    )
+    assert (
+        HFDataset(root, path, mol_ids_to_exclude=[]).processed_paths
+        == unfiltered.processed_paths
+    )
+    assert "mol_ids_to_exclude" not in unfiltered.tasks[0][2]
+
+    def unexpected_processing(task):
+        raise AssertionError("Equivalent exclusions should reuse the processed cache")
+
+    monkeypatch.setattr(implementation, "_process_shard", unexpected_processing)
+    ids.write_text(" a \na\n\n")
+    assert (
+        HFDataset(root, path, mol_ids_to_exclude=ids).processed_paths
+        == changed.processed_paths
+    )
+    assert (
+        HFDataset(root, path, mol_ids_to_exclude=["a", " a "]).processed_paths
+        == changed.processed_paths
+    )
+
+
+@pytest.mark.parametrize("cleared", [[], None])
+def test_hf_molecule_exclusions_json_overrides(tmp_path, parquet_file, monkeypatch, cleared):
+    """Global files use cwd; record files use the JSON directory and replace globals."""
+    first = parquet_file("first.parquet", count=4, mol_id=["a", "b"] * 2)
+    second = parquet_file("second.parquet", count=4, mol_id=["a", "b"] * 2)
+    spec = tmp_path / "spec"
+    spec.mkdir()
+    (tmp_path / "global.txt").write_text("b\n")
+    (spec / "local.txt").write_text("a\n")
+    config = spec / "inputs.json"
+    config.write_text(
+        json.dumps(
+            {
+                "data": [
+                    {"path": "../" + first.name},
+                    {"path": "../" + second.name, "mol_ids_to_exclude": "local.txt"},
+                    {"path": "../" + first.name, "mol_ids_to_exclude": cleared},
+                ]
+            }
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+    dataset = HFDataset(tmp_path / "cache", config, mol_ids_to_exclude="global.txt")
+    assert [dataset[i].pos[0, 0].item() for i in range(len(dataset))] == [
+        0,
+        2,
+        1,
+        3,
+        0,
+        1,
+        2,
+        3,
+    ]
+
+
+def test_hf_molecule_exclusion_projection_and_missing_ids(
+    tmp_path, parquet_file, monkeypatch
+):
+    path = parquet_file(mol_id=["keep", "drop"] * 4)
+    original_load = hf.load_dataset
+    projected = []
+
+    def load(*args, **kwargs):
+        projected.append(kwargs["columns"])
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(hf, "load_dataset", load)
+    dataset = HFDataset(
+        tmp_path / "cache", path, properties=[], mol_ids_to_exclude=["drop"]
+    )
+    assert all(
+        set(columns) == {"atomic_numbers", "positions", "forces", "mol_id"}
+        for columns in projected
+    )
+    assert "mol_id" not in dataset.dataset.column_names
+    missing = tmp_path / "no_ids.parquet"
+    hf.Dataset.from_parquet(str(path), cache_dir=tmp_path / "reader").remove_columns(
+        "mol_id"
+    ).to_parquet(missing)
+    with pytest.raises(ValueError, match="requires a 'mol_id' column"):
+        HFDataset(tmp_path / "missing-cache", missing, mol_ids_to_exclude=["drop"])
+    assert len(HFDataset(tmp_path / "no-exclusions", missing, properties=[])) == 8
+    with pytest.raises(ValueError, match="No conformations remain"):
+        HFDataset(tmp_path / "cache", path, mol_ids_to_exclude=["keep", "drop"])
+
+
+@pytest.mark.parametrize("value", [1, True, {}, [None], [True], [["nested"]], "missing.txt"])
+def test_hf_invalid_molecule_exclusions(tmp_path, parquet_file, value):
+    with pytest.raises(ValueError, match="mol_ids_to_exclude"):
+        HFDataset(tmp_path / "cache", parquet_file(), mol_ids_to_exclude=value)
+
+
+def test_hf_molecule_exclusions_from_training_yaml(tmp_path, parquet_file):
+    """dataset_arg reaches cache preparation and filtering before ordinary splits."""
+    import yaml
+    from torchmdnet.scripts.train import get_argparse
+
+    path = parquet_file(count=10, mol_id=["keep", "drop"] * 5)
+    config = tmp_path / "input.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "dataset": "HFDataset",
+                "dataset_root": str(tmp_path / "cache"),
+                "dataset_arg": {
+                    "paths": str(path),
+                    "mol_ids_to_exclude": ["drop"],
+                    "properties": [],
+                },
+                "log_dir": str(tmp_path),
+                "train_size": 3,
+                "val_size": 1,
+                "test_size": 1,
+                "num_workers": 0,
+            }
+        )
+    )
+    args = get_argparse().parse_args(["--conf", str(config)])
+    module = DataModule(args)
+    module.prepare_data()
+    module.setup("fit")
+    assert [module.dataset[i].pos[0, 0].item() for i in range(len(module.dataset))] == [
+        0,
+        2,
+        4,
+        6,
+        8,
+    ]
+    assert [
+        len(module.train_dataset),
+        len(module.val_dataset),
+        len(module.test_dataset),
+    ] == [3, 1, 1]
+    assert module.hparams.dataset_arg["mol_ids_to_exclude"] == ["drop"]

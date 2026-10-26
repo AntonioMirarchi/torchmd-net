@@ -16,6 +16,29 @@ from torch_geometric.data import Data, Dataset
 from tqdm import tqdm
 
 
+def _load_mol_ids_to_exclude(value, base):
+    """Resolve an ID list or text file to sorted, unique string identifiers."""
+    if value is None:
+        return []
+    if isinstance(value, (str, os.PathLike)):
+        path = (base / Path(value).expanduser()).resolve()
+        if not path.is_file():
+            raise ValueError(
+                f"mol_ids_to_exclude file does not exist: {path}. "
+                "Supply molecule IDs as a list or a path to a text file."
+            )
+        with path.open(encoding="utf-8") as f:
+            value = f.read().splitlines()
+    if not isinstance(value, (list, tuple, set)):
+        raise ValueError("mol_ids_to_exclude must be an ID list or a text file path.")
+    if any(
+        not isinstance(item, (str, int, np.integer)) or isinstance(item, bool)
+        for item in value
+    ):
+        raise ValueError("mol_ids_to_exclude entries must be strings or integers.")
+    return sorted({str(item).strip() for item in value if str(item).strip()})
+
+
 def _iter_samples(dataset, options):
     """Yield filtered, normalized rows from a projected HF iterable dataset.
 
@@ -23,11 +46,18 @@ def _iter_samples(dataset, options):
     row indices; atom-count and scaled-force filters precede hydrogen removal.
     Charge derivation uses all original atoms, even when hydrogens are removed.
     """
+    excluded_ids = set(options.get("mol_ids_to_exclude", []))
     # Keep discarded rows as Arrow slices instead of decoding their atom arrays.
     for idx, table in enumerate(dataset.with_format("arrow")):
         if idx % options["stride"]:
             continue
+        if excluded_ids:
+            mol_id = table["mol_id"][0].as_py()
+            if mol_id is not None and str(mol_id).strip() in excluded_ids:
+                continue
         sample = table.to_pylist()[0]
+        # Identifiers are used only for filtering, not as model input or output.
+        sample.pop("mol_id", None)
         if "partial_charges" in sample:
             sample["pq"] = sample.pop("partial_charges")
         z = np.asarray(sample["atomic_numbers"])
@@ -100,6 +130,12 @@ def _process_shard(task):
         if missing:
             raise ValueError(f"Missing required columns in {path}: {sorted(missing)}")
         columns = list(features)
+        if options.get("mol_ids_to_exclude"):
+            if "mol_id" not in available:
+                raise ValueError(
+                    f"mol_ids_to_exclude requires a 'mol_id' column in {path}."
+                )
+            columns.append("mol_id")
         properties = options["properties"]
         # Prefer explicit total/formal charge; read partial charges only if needed.
         if "q" in properties:
@@ -217,6 +253,14 @@ class HFDataset(Dataset):
         use_box (bool): Require and return box vectors for periodic calculations
             (default: False). No box column is read when False.
         transform (callable, optional): Transform applied to each retrieved sample.
+        mol_ids_to_exclude (list, str or os.PathLike, optional): Molecule IDs to
+            exclude, or a UTF-8 text file with one ID per line. Requires a
+            ``mol_id`` column when nonempty. All conformations with matching IDs
+            are removed before sampling. IDs are matched as case-sensitive
+            strings after trimming whitespace; integer IDs are converted to
+            strings. Global file paths use the working directory; file paths
+            in JSON records use the JSON directory. A record replaces the global
+            exclusion list; None or an empty list disables it for that record.
     """
 
     def __init__(
@@ -233,6 +277,7 @@ class HFDataset(Dataset):
         hf_workers=1,
         use_box=False,
         transform=None,
+        mol_ids_to_exclude=None,
     ):
         """Resolve input files and cache keys, process missing shards, and open them."""
         from datasets import concatenate_datasets, load_from_disk
@@ -244,6 +289,7 @@ class HFDataset(Dataset):
             mask_hydrogen=mask_hydrogen,
             sample_fraction=sample_fraction,
             force_scale=force_scale,
+            mol_ids_to_exclude=_load_mol_ids_to_exclude(mol_ids_to_exclude, Path.cwd()),
         )
         if isinstance(properties, str) or set(properties) - {"q", "pq"}:
             raise ValueError(
@@ -276,6 +322,14 @@ class HFDataset(Dataset):
                 )
             # A record overrides global processing defaults only for its own file(s).
             options = {**defaults, **{k: v for k, v in record.items() if k != "path"}}
+            if "mol_ids_to_exclude" in record:
+                options["mol_ids_to_exclude"] = _load_mol_ids_to_exclude(
+                    record["mol_ids_to_exclude"], base
+                )
+            # Keep existing unfiltered cache keys unchanged. Nonempty exclusions
+            # are hashed by their normalized contents, not the list-file path.
+            if not options["mol_ids_to_exclude"]:
+                del options["mol_ids_to_exclude"]
             if not isinstance(options["stride"], int) or options["stride"] < 1:
                 raise ValueError("stride must be a positive integer.")
             if options["max_num_atoms"] is not None and (
