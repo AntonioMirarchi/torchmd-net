@@ -234,6 +234,8 @@ def load_model(filepath, args=None, device="cpu", return_std=False, **kwargs):
     """Load a model from a checkpoint file.
 
        If a list of paths or a path to a zip file is given, an :py:mod:`Ensemble` model is returned.
+       Normalization buffers are initialized from the saved mean/std tensors so
+       their shapes and values are preserved, including non-scalar statistics.
     Args:
         filepath (str or list): Can be any of the following:
 
@@ -271,7 +273,9 @@ def load_model(filepath, args=None, device="cpu", return_std=False, **kwargs):
     if args["model"] == "tensornetv2_alt" or args["model"] == "tensornet-nqe":
         args["model"] = "tensornet2"
 
-    model = create_model(args)
+    state_dict = {re.sub(r"^model\.", "", k): v for k, v in ckpt["state_dict"].items()}
+    state_mean, state_std = state_dict.get("mean"), state_dict.get("std")
+    model = create_model(args, mean=state_mean, std=state_std)
     if delta_learning and "remove_ref_energy" in kwargs:
         if not kwargs["remove_ref_energy"]:
             assert (
@@ -287,7 +291,6 @@ def load_model(filepath, args=None, device="cpu", return_std=False, **kwargs):
             if isinstance(prior, priors.Atomref):
                 prior.enable = False
 
-    state_dict = {re.sub(r"^model\.", "", k): v for k, v in ckpt["state_dict"].items()}
     # In ET, before we had output_model.output_network.{0,1}.update_net.[0-9].{weight,bias}
     # Now we have output_model.output_network.{0,1}.update_net.layers.[0-9].{weight,bias}
     # In other models, we had output_model.output_network.{0,1}.{weight,bias},

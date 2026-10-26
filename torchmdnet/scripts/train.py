@@ -78,6 +78,7 @@ def get_argparse():
     parser.add_argument('--remove-ref-energy', action='store_true', help='If true, remove the reference energy from the dataset for delta-learning. Total energy can still be predicted by the model during inference by turning this flag off when loading.  The dataset must be compatible with Atomref for this to be used.')
     parser.add_argument('--checkpoint-monitor', type=str, default='val_total_mse_loss', choices=['train_total_mse_loss', 'val_total_mse_loss'], help='Metric to monitor for writing out best models')
     parser.add_argument('--load-weights', default=None, type=str, help='Load the weights of an existing model')
+    parser.add_argument('--load-weights-normalization', default='checkpoint', type=str, choices=['checkpoint', 'dataset'], help='Normalization for --load-weights: checkpoint preserves saved mean/std (default); dataset uses current training statistics when standardize is true, otherwise mean=0 and std=1.')
     # dataset specific
     parser.add_argument('--dataset', default=None, type=str, choices=datasets.__all__, help='Name of the torch_geometric dataset')
     parser.add_argument('--dataset-root', default='~/data', type=str, help='Data storage directory (not used if dataset is "CG")')
@@ -170,7 +171,13 @@ def get_args():
     return args
 
 
-def fix_state_dict(ckpt):
+def fix_state_dict(ckpt, reset_normalization=True):
+    """Adapt pretrained weights, optionally excluding their normalization.
+
+    Used by ``--load-weights`` for transfer learning, not checkpoint resume.
+    If ``reset_normalization`` is True, the caller supplies the target model's
+    mean/std before strict loading. Otherwise checkpoint statistics are retained.
+    """
     import re
 
     state_dict = {re.sub(r"^model\.", "", k): v for k, v in ckpt["state_dict"].items()}
@@ -191,6 +198,8 @@ def fix_state_dict(ckpt):
     ]
     for p in patterns:
         state_dict = {re.sub(p[0], p[1], k): v for k, v in state_dict.items()}
+    if reset_normalization:
+        state_dict = {k: v for k, v in state_dict.items() if k not in ("mean", "std")}
     return state_dict
 
 
@@ -212,6 +221,8 @@ def _requires_pre_fit_setup(args):
 
 def main():
     args = get_args()
+    if args.load_weights_normalization not in ("checkpoint", "dataset"):
+        raise ValueError("load_weights_normalization must be 'checkpoint' or 'dataset'")
     callbacks = []
     if args.decay_rate_ema_weights is not None:
         callbacks.append(
@@ -241,12 +252,28 @@ def main():
     # In the deferred path there are no priors, so data.dataset can still be None.
     prior_models = create_prior_models(vars(args), data.dataset)
     args.prior_args = [p.get_init_args() for p in prior_models]
-    # initialize lightning module
-    model = LNNP(args, prior_model=prior_models, mean=data.mean, std=data.std)
+    mean, std = data.mean, data.std
+    state_dict = None
     if args.load_weights is not None:
         print(f"Loading weights from {args.load_weights}")
         ckpt = torch.load(args.load_weights, map_location="cpu")
-        model.model.load_state_dict(fix_state_dict(ckpt))
+        state_dict = fix_state_dict(
+            ckpt, reset_normalization=args.load_weights_normalization == "dataset"
+        )
+        if args.load_weights_normalization == "checkpoint":
+            if "mean" not in state_dict or "std" not in state_dict:
+                raise ValueError(
+                    "Pretrained weights do not contain mean/std. Use "
+                    "--load-weights-normalization dataset to initialize normalization "
+                    "from the current data settings."
+                )
+            mean, std = state_dict["mean"], state_dict["std"]
+
+    # Initialize normalization before loading, including its saved tensor shapes.
+    model = LNNP(vars(args), prior_model=prior_models, mean=mean, std=std)
+    if state_dict is not None:
+        state_dict.update(mean=model.model.mean, std=model.model.std)
+        model.model.load_state_dict(state_dict)
 
     mon = args.checkpoint_monitor
     chkpoint_name = f"epoch={{epoch}}-{mon.split('_')[0]}_loss={{{mon}:.4f}}"

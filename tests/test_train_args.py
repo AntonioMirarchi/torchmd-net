@@ -107,6 +107,30 @@ def test_ema_weight_config(tmp_path):
     assert args.ema_update_steps == 3
 
 
+def test_load_weights_normalization_config(tmp_path):
+    parser = get_argparse()
+    assert parser.parse_args([]).load_weights_normalization == "checkpoint"
+    config = tmp_path / "normalization.yaml"
+    config.write_text("load_weights_normalization: dataset\n")
+    args = parser.parse_args(["--conf", str(config)])
+    assert args.load_weights_normalization == "dataset"
+    args = parser.parse_args(
+        ["--conf", str(config), "--load-weights-normalization", "checkpoint"]
+    )
+    assert args.load_weights_normalization == "checkpoint"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--load-weights-normalization", "unknown"])
+    config.write_text("load_weights_normalization: unknown\n")
+    args = parser.parse_args(["--conf", str(config)])
+    with (
+        patch("torchmdnet.scripts.train.get_args", return_value=args),
+        patch("torchmdnet.scripts.train.DataModule") as data,
+    ):
+        with pytest.raises(ValueError, match="load_weights_normalization"):
+            main()
+        data.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "settings,message",
     [
