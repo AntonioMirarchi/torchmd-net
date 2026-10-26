@@ -16,6 +16,7 @@ from lightning.pytorch.callbacks import (
     EarlyStopping,
 )
 from torchmdnet.module import LNNP
+from torchmdnet.callbacks import EMAWeightAveraging
 from torchmdnet import datasets, priors, models
 from torchmdnet.data import DataModule
 from torchmdnet.loss import loss_class_mapping, force_loss_reductions
@@ -57,6 +58,9 @@ def get_argparse():
     parser.add_argument('--weight-decay', type=float, default=0.0, help='Weight decay strength')
     parser.add_argument('--ema-alpha-y', type=float, default=1.0, help='The amount of influence of new losses on the exponential moving average of y. Must be between 0 and 1.')
     parser.add_argument('--ema-alpha-neg-dy', type=float, default=1.0, help='The amount of influence of new losses on the exponential moving average of dy. Must be between 0 and 1.')
+    parser.add_argument('--decay-rate-ema-weights', type=float, default=None, help='Decay for exponential averaging of model weights; strictly between 0 and 1. Default: disabled. Independent of loss EMA.')
+    parser.add_argument('--ema-update-steps', type=int, default=10, help='Number of optimizer steps between EMA weight updates, starting at ema_start_step. Must be positive. Default: 10.')
+    parser.add_argument('--ema-start-step', type=int, default=1000, help='Zero-based optimizer-step index of the first EMA weight update. Must be non-negative. Default: 1000 (after optimizer step 1001).')
     parser.add_argument('--ngpus', type=int, default=-1, help='Number of GPUs, -1 use all available. Use CUDA_VISIBLE_DEVICES=1, to decide gpus')
     parser.add_argument('--num-nodes', type=int, default=1, help='Number of GPU nodes for distributed training with the Lightning Trainer.')
     parser.add_argument('--precision', type=int, default=32, choices=[16, 32, 64], help='Floating point precision')
@@ -208,6 +212,15 @@ def _requires_pre_fit_setup(args):
 
 def main():
     args = get_args()
+    callbacks = []
+    if args.decay_rate_ema_weights is not None:
+        callbacks.append(
+            EMAWeightAveraging(
+                decay=args.decay_rate_ema_weights,
+                start_step=args.ema_start_step,
+                update_every=args.ema_update_steps,
+            )
+        )
     if args.remove_ref_energy:
         if args.prior_model is None:
             args.prior_model = []
@@ -241,7 +254,6 @@ def main():
     if hasattr(data, "idx_test") and len(data.idx_test):
         chkpoint_name += "-test_loss={test_total_l1_loss:.4f}"
 
-    callbacks = []
     checkpoint_callback = ModelCheckpoint(
         dirpath=args.log_dir,
         monitor=args.checkpoint_monitor,

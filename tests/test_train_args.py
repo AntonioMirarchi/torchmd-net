@@ -44,11 +44,16 @@ def test_requires_pre_fit_setup(options, expected):
     assert _requires_pre_fit_setup(args) == expected
 
 
-def test_hf_setup_is_deferred_to_trainer(tmp_path):
+@pytest.mark.parametrize("use_ema", [False, True])
+def test_hf_setup_is_deferred_to_trainer(tmp_path, use_ema):
     """Reach Trainer.fit without touching the HF dataset or assuming splits exist."""
     args = get_argparse().parse_args(
         ["--dataset", "HFDataset", "--log-dir", str(tmp_path)]
     )
+    if use_ema:
+        args.decay_rate_ema_weights = 0.9
+        args.ema_start_step = 2
+        args.ema_update_steps = 3
     # Deliberately omit idx_test, which does not exist until Lightning calls setup.
     data = Mock(spec=["dataset", "mean", "std", "prepare_data", "setup"])
     data.dataset = data.mean = data.std = None
@@ -58,6 +63,16 @@ def test_hf_setup_is_deferred_to_trainer(tmp_path):
         assert datamodule is data
         data.prepare_data.assert_not_called()
         data.setup.assert_not_called()
+        from torchmdnet.callbacks import EMAWeightAveraging
+
+        ema = [
+            callback
+            for callback in trainer.call_args.kwargs["callbacks"]
+            if isinstance(callback, EMAWeightAveraging)
+        ]
+        assert len(ema) == int(use_ema)
+        if use_ema:
+            assert (ema[0].decay, ema[0].start_step, ema[0].update_every) == (0.9, 2, 3)
         raise RuntimeError("Reached Trainer.fit without eager setup")
 
     with (
@@ -71,6 +86,46 @@ def test_hf_setup_is_deferred_to_trainer(tmp_path):
             RuntimeError, match="Reached Trainer.fit without eager setup"
         ):
             main()
+
+
+def test_ema_weight_config(tmp_path):
+    """Keep the custom repo option names and respect YAML/CLI precedence."""
+    parser = get_argparse()
+    args = parser.parse_args([])
+    assert args.decay_rate_ema_weights is None
+    assert args.ema_start_step == 1000
+    assert args.ema_update_steps == 10
+    config = tmp_path / "ema.yaml"
+    config.write_text(
+        "decay_rate_ema_weights: 0.9\nema_start_step: 5\nema_update_steps: 2\n"
+    )
+    args = parser.parse_args(
+        ["--conf", str(config), "--ema-start-step", "0", "--ema-update-steps", "3"]
+    )
+    assert args.decay_rate_ema_weights == 0.9
+    assert args.ema_start_step == 0
+    assert args.ema_update_steps == 3
+
+
+@pytest.mark.parametrize(
+    "settings,message",
+    [
+        ({"decay_rate_ema_weights": 1.0}, "decay"),
+        ({"ema_start_step": -1}, "start_step"),
+        ({"ema_update_steps": 0}, "update_every"),
+    ],
+)
+def test_ema_invalid_config_fails_before_data_setup(settings, message):
+    args = get_argparse().parse_args([])
+    args.decay_rate_ema_weights = 0.9
+    vars(args).update(settings)
+    with (
+        patch("torchmdnet.scripts.train.get_args", return_value=args),
+        patch("torchmdnet.scripts.train.DataModule") as data,
+    ):
+        with pytest.raises(ValueError, match=message):
+            main()
+        data.assert_not_called()
 
 
 def test_cutoff_config(tmp_path):
