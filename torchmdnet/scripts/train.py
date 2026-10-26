@@ -340,7 +340,14 @@ def main():
     trainer.fit(model, data, ckpt_path=None if args.reset_trainer else args.load_model)
 
     # run test set after completing the fit
-    model = LNNP.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
+    model = LNNP.load_from_checkpoint(
+        trainer.checkpoint_callback.best_model_path,
+        hparams_file=os.path.join(args.log_dir, "input.yaml"),
+        # input.yaml predates dataset-derived prior initialization arguments.
+        prior_args=args.prior_args,
+        mean=model.model.mean,
+        std=model.model.std,
+    )
     trainer = pl.Trainer(
         logger=_logger,
         inference_mode=False,
