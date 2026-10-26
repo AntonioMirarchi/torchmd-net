@@ -162,6 +162,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
         dtype=dtype,
         static_shapes=args.get("static_shapes", False),
         num_hidden_layers=args.get("output_mlp_num_layers", 0),
+        bias_on_last_layer=args.get("output_mlp_bias_on_last_layer", True),
         num_layers=(
             args["num_layers"]
             if args["output_model"] == "ScalarPlusWeightedCoulomb"
@@ -172,6 +173,7 @@ def create_model(args, prior_model=None, mean=None, std=None):
         coulomb_cutoff=args.get("coulomb_cutoff", None),
         coulomb_max_num_neighbors=args.get("coulomb_max_num_neighbors", None),
         coulomb_neighbor_strategy=args.get("coulomb_neighbor_strategy", "brute"),
+        coulomb_epsilon_solvent=args.get("coulomb_epsilon_solvent", 78.3),
     )
 
     # combine representation and output network
@@ -280,6 +282,10 @@ def load_model(filepath, args=None, device="cpu", return_std=False, **kwargs):
             ), "I expected the last prior to be Atomref."
             # Set the Atomref prior to enabled
             model.prior_model[-1].enable = True
+    if kwargs.get("remove_ref_energy", False):
+        for prior in model.prior_model or []:
+            if isinstance(prior, priors.Atomref):
+                prior.enable = False
 
     state_dict = {re.sub(r"^model\.", "", k): v for k, v in ckpt["state_dict"].items()}
     # In ET, before we had output_model.output_network.{0,1}.update_net.[0-9].{weight,bias}

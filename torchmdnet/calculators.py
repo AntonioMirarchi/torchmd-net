@@ -210,6 +210,9 @@ class TMDNETCalculator(ase_calc.Calculator):
 
         ase_calc.Calculator.__init__(self)
         self.device = device
+        if isinstance(dtype, str):
+            dtype = getattr(torch, dtype)
+        self.dtype = dtype
         self.remove_ref_energy = kwargs.pop("remove_ref_energy", True)
         self.max_num_neighbors = kwargs.pop("max_num_neighbors", 64)
         self.static_shapes = True if compile else False
@@ -226,7 +229,7 @@ class TMDNETCalculator(ase_calc.Calculator):
         for parameter in self.model.parameters():
             parameter.requires_grad = False
 
-        self.model.to(device=self.device, dtype=dtype)
+        self.model.to(device=self.device, dtype=self.dtype).eval()
 
         if compile:
             self.compile = True
@@ -246,7 +249,9 @@ class TMDNETCalculator(ase_calc.Calculator):
         state = super().check_state(atoms, tol=tol)
 
         # check if anything in info has changed (e.g. the charge)
-        if (not state) and (self.atoms.info != atoms.info):
+        if (not state) and (
+            self.atoms.info.get("charge", 0.0) != atoms.info.get("charge", 0.0)
+        ):
             state.append("info")
         return state
 
@@ -262,38 +267,23 @@ class TMDNETCalculator(ase_calc.Calculator):
 
         ase_calc.Calculator.calculate(self, atoms, properties, system_changes)
 
-        numbers = atoms.numbers
-
-        positions = atoms.positions
-        total_charge = atoms.info["charge"]
-        batch = [0 for _ in range(len(numbers))]
+        atoms = self.atoms
+        z = torch.tensor(atoms.numbers, device=self.device, dtype=torch.long)
+        pos = torch.tensor(
+            atoms.positions, device=self.device, dtype=self.dtype, requires_grad=True
+        )
+        q = torch.tensor(
+            [atoms.info.get("charge", 0.0)], device=self.device, dtype=self.dtype
+        )
+        batch = torch.zeros_like(z)
+        box = None
         if atoms.pbc.any():
-            cell = atoms.cell.array
-            box = torch.tensor(cell, device=self.device, dtype=torch.float32)
-        else:
-            box = None
+            box = torch.tensor(atoms.cell.array, device=self.device, dtype=self.dtype)
 
-        batch = torch.tensor(batch, device=self.device, dtype=torch.long)
-        numbers = torch.tensor(numbers, device=self.device, dtype=torch.long)
-        positions = torch.tensor(
-            positions, device=self.device, dtype=torch.float32, requires_grad=True
-        )
-        total_charge = torch.tensor(
-            [total_charge], device=self.device, dtype=torch.float32
-        )
-
-        if self.compile and "numbers" in system_changes:
-            if self.evals == 0:
-                print("compiling...")
-            else:
-                print("atomic numbers changed, re-compiling...")
-
-            # Warmup pass to set dim_size before compilation
-            # This is needed because torch.compile doesn't support .item() calls
-            self.model.to(self.device)
+        if self.compile and (not self.compiled or "numbers" in system_changes):
+            # Warm up cached batch sizes before full-graph compilation.
             with torch.no_grad():
-                _ = self.model(numbers, positions, batch=batch, q=total_charge, box=box)
-
+                self.model(z, pos, batch=batch, q=q, box=box)
             self.compiled_model = torch.compile(
                 self.model,
                 backend="inductor",
@@ -303,17 +293,10 @@ class TMDNETCalculator(ase_calc.Calculator):
             )
             self.compiled = True
 
-        if self.compiled:
-            energy, _ = self.compiled_model(
-                numbers, positions, batch=batch, q=total_charge, box=box
-            )
-        else:
-            energy, _ = self.model(
-                numbers, positions, batch=batch, q=total_charge, box=box
-            )
-
-        energy.backward()
-        forces = -positions.grad
+        model = self.compiled_model if self.compiled else self.model
+        with torch.enable_grad():
+            energy, _ = model(z, pos, batch=batch, q=q, box=box)
+            forces = -torch.autograd.grad(energy.sum(), pos)[0]
 
         self.results["energy"] = energy.detach().cpu().item()
         self.results["forces"] = forces.detach().cpu().numpy()

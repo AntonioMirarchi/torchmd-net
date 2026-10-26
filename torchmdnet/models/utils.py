@@ -619,6 +619,7 @@ class MLP(nn.Module):
         activation (str): Activation function to use.
         num_hidden_layers (int, optional): Number of hidden layers. Defaults to 0.
         dtype (torch.dtype, optional): Data type to use. Defaults to torch.float32.
+        bias_on_last_layer (bool, optional): Include the output bias. Defaults to True.
     """
 
     def __init__(
@@ -629,6 +630,7 @@ class MLP(nn.Module):
         activation,
         num_hidden_layers=0,
         dtype=torch.float32,
+        bias_on_last_layer=True,
     ):
         super(MLP, self).__init__()
         act_class = act_class_mapping[activation]
@@ -639,13 +641,16 @@ class MLP(nn.Module):
         for _ in range(num_hidden_layers):
             self.layers.append(nn.Linear(hidden_channels, hidden_channels, dtype=dtype))
             self.layers.append(self.act)
-        self.layers.append(nn.Linear(hidden_channels, out_channels, dtype=dtype))
+        self.layers.append(
+            nn.Linear(hidden_channels, out_channels, bias=bias_on_last_layer, dtype=dtype)
+        )
 
     def reset_parameters(self):
         for layer in self.layers:
             if isinstance(layer, nn.Linear):
                 nn.init.xavier_uniform_(layer.weight)
-                layer.bias.data.fill_(0)
+                if layer.bias is not None:
+                    layer.bias.data.fill_(0)
 
     def forward(self, x):
         x = self.layers(x)
